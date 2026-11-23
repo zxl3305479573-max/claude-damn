@@ -170,7 +170,7 @@
                           Content="忽略 WebRTC 阻断"
                           Foreground="{StaticResource TextBrush}"
                           VerticalAlignment="Center"
-                          ToolTip="继续显示 WebRTC 检测结果，但不因 WebRTC 泄露或未验证状态自动断网"
+                          ToolTip="继续显示 WebRTC 检测结果，仅忽略未验证状态；确认泄露时仍会自动断网"
                           Click="IgnoreWebRtcCheckBox_Click"
                           Margin="0,0,14,0"/>
                 <Button x:Name="CheckButton" Content="立即检查" Style="{StaticResource PrimaryButtonStyle}" Click="CheckButton_Click" Padding="18,10" Margin="0,0,8,0"/>

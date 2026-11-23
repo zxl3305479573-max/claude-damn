@@ -307,9 +307,7 @@ public partial class MainWindow : Window
                 {
                     _blocked = false;
                     SaveGuardianState(false, string.Empty, null, report.ObservedAt);
-                    TripReasonText.Text = _ignoreWebRtc && report.HasConfirmedWebRtcLeak
-                        ? "已手动忽略 WebRTC 阻断，未断网；检测证据仍保留在面板"
-                        : blockingFailures.Count == 0
+                    TripReasonText.Text = blockingFailures.Count == 0
                         ? "暂无"
                         : "当前阻断条件已解除，网络已恢复";
                     SetReportProtectionState(report);
@@ -376,7 +374,10 @@ public partial class MainWindow : Window
             .Where(check =>
                 check.Id != "webrtc" ||
                 check.Status == CheckStatus.Fail)
-            .Where(check => !(_ignoreWebRtc && check.Id == "webrtc"))
+            .Where(check =>
+                !(_ignoreWebRtc &&
+                  check.Id == "webrtc" &&
+                  check.Status == CheckStatus.Unknown))
             .ToArray();
 
     private static string FormatTripReason(IReadOnlyList<CheckResult> failures) =>
@@ -443,8 +444,8 @@ public partial class MainWindow : Window
             Environment.NewLine,
             BuildWebRtcLines(report));
         IgnoreWebRtcCheckBox.ToolTip = _ignoreWebRtc
-            ? "当前已忽略 WebRTC 阻断，检测结果仍显示在面板中。点击取消后，下一次确认泄露会恢复阻断。"
-            : "WebRTC 未验证不会被当作泄露。只有发现非 VPN 出口的公网候选地址时才会触发阻断。";
+            ? "当前仅忽略 WebRTC 未验证状态，检测结果仍显示在面板中。确认泄露时仍会阻断网络。"
+            : "WebRTC 未验证不会被当作泄露。发现非 VPN 出口的公网候选地址时会触发阻断。";
         ConnectionsText.Text = report.Network.ActiveConnections.Count == 0
             ? "暂无已建立 TCP 连接"
             : string.Join(Environment.NewLine, report.Network.ActiveConnections);
@@ -463,11 +464,7 @@ public partial class MainWindow : Window
 
     private void SetReportProtectionState(GuardianReport report)
     {
-        if (_ignoreWebRtc && report.HasConfirmedWebRtcLeak)
-        {
-            SetProtectionState("已忽略", "StatusWarnBackgroundBrush", "StatusWarnBrush");
-        }
-        else if (HasEffectiveStatus(report, CheckStatus.Fail))
+        if (HasEffectiveStatus(report, CheckStatus.Fail))
         {
             SetProtectionState("异常", "StatusErrorBackgroundBrush", "StatusErrorBrush");
         }
@@ -489,7 +486,9 @@ public partial class MainWindow : Window
         report.Checks.Any(check =>
             check.Blocking &&
             check.Status == status &&
-            !(_ignoreWebRtc && check.Id == "webrtc"));
+            !(_ignoreWebRtc &&
+              check.Id == "webrtc" &&
+              check.Status == CheckStatus.Unknown));
 
     private static IEnumerable<string> BuildWebRtcLines(GuardianReport report)
     {
