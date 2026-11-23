@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <title>Claude Desktop Guardian WebRTC Probe</title>
+</head>
+<body>
+    <script src="leak-check.js"></script>
+    <script>
+        (() => {
+            const query = new URLSearchParams(window.location.search);
+            const stunUrls = JSON.parse(query.get("stunUrls") || "[]");
+            const timeoutMs = Number(query.get("timeoutMs") || "4000");
+            const requestId = query.get("requestId") || "";
+
+            window.guardianRunWebRtcProbe = async () => {
+                const result = await window.guardianDetectWebRtcLeak({
+                    stunUrls,
+                    timeoutMs
+                });
+                window.chrome.webview.postMessage(JSON.stringify({
+                    requestId,
+                    result
+                }));
+            };
+        })();
+    </script>
+</body>
+</html>
