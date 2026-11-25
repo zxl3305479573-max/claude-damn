@@ -3,8 +3,8 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Claude Desktop Guardian"
         Icon="Assets/claude-desktop-guardian.ico"
-        Width="320"
-        Height="158"
+        Width="344"
+        Height="182"
         WindowStyle="None"
         ResizeMode="NoResize"
         ShowInTaskbar="False"
@@ -21,6 +21,7 @@
             MouseLeftButtonDown="RootBorder_MouseLeftButtonDown">
         <Grid>
             <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
@@ -62,12 +63,27 @@
                            FontSize="12"
                            TextTrimming="CharacterEllipsis"/>
             </StackPanel>
+            <StackPanel Grid.Row="3" Orientation="Horizontal" Margin="0,5,0,0">
+                <TextBlock x:Name="WfpStatusText"
+                           Text="WFP：未启用"
+                           Foreground="{StaticResource MutedBrush}"
+                           FontSize="11.5"
+                           TextTrimming="CharacterEllipsis"/>
+                <TextBlock Text="  ·  "
+                           Foreground="{StaticResource MutedBrush}"
+                           FontSize="11.5"/>
+                <TextBlock x:Name="AccountSlotText"
+                           Text="槽位：未绑定"
+                           Foreground="{StaticResource AccentHoverBrush}"
+                           FontSize="11.5"
+                           TextTrimming="CharacterEllipsis"/>
+            </StackPanel>
             <TextBlock x:Name="LastCheckText"
-                       Grid.Row="3"
+                       Grid.Row="4"
                        Text="尚未检查"
                        Foreground="{StaticResource MutedBrush}"
                        FontSize="11"
-                       Margin="0,7,0,0"
+                       Margin="0,6,0,0"
                        TextTrimming="CharacterEllipsis"/>
         </Grid>
     </Border>

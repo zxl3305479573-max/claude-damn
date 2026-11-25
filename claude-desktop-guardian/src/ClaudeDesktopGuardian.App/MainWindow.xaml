@@ -5,14 +5,14 @@
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
         Title="Claude Desktop Guardian"
         Icon="Assets/claude-desktop-guardian.ico"
-        Width="1180"
-        Height="800"
-        MinWidth="820"
-        MinHeight="580"
+        Width="1240"
+        Height="830"
+        MinWidth="920"
+        MinHeight="640"
         Background="{StaticResource WindowBrush}"
         Foreground="{StaticResource TextBrush}"
         FontFamily="Segoe UI">
-    <Grid Margin="30">
+    <Grid Margin="24">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -20,163 +20,591 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,22">
+        <!-- Header -->
+        <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,14">
             <StackPanel DockPanel.Dock="Left">
-                <TextBlock Text="Claude Desktop Guardian" FontSize="28" FontWeight="Bold"/>
-                <TextBlock Text="VPN / DNS / WebRTC / 进程网络守护"
+                <TextBlock Text="Claude Desktop Guardian" FontSize="24" FontWeight="Bold"/>
+                <TextBlock Text="VPN / TUN / WFP 内核锁 / DNS / WebRTC / 多账号守护"
                            Foreground="{StaticResource MutedBrush}"
-                           FontSize="14"
-                           Margin="0,7,0,0"/>
+                           FontSize="12.5"
+                           Margin="0,4,0,0"/>
             </StackPanel>
-            <Border x:Name="ProtectionStateBorder"
-                    DockPanel.Dock="Right"
-                    Background="{StaticResource StatusUnknownBackgroundBrush}"
-                    BorderBrush="{StaticResource LineBrush}"
-                    BorderThickness="1"
-                    CornerRadius="12"
-                    MinWidth="112"
-                    Padding="16,9"
-                    HorizontalAlignment="Right"
-                    VerticalAlignment="Center">
-                <TextBlock x:Name="ProtectionStateText"
-                           Text="检查中"
-                           Foreground="{StaticResource StatusUnknownBrush}"
-                           FontWeight="SemiBold"
-                           HorizontalAlignment="Center"/>
-            </Border>
+            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <Border x:Name="WfpBadgeBorder"
+                        Background="{StaticResource StatusUnknownBackgroundBrush}"
+                        BorderBrush="{StaticResource LineBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        Padding="12,7"
+                        Margin="0,0,10,0"
+                        ToolTip="WFP 内核级 TUN-only 出站锁状态">
+                    <TextBlock x:Name="WfpBadgeText"
+                               Text="WFP：未启用"
+                               Foreground="{StaticResource MutedBrush}"
+                               FontSize="12.5"
+                               FontWeight="SemiBold"/>
+                </Border>
+                <Border x:Name="ProtectionStateBorder"
+                        Background="{StaticResource StatusUnknownBackgroundBrush}"
+                        BorderBrush="{StaticResource LineBrush}"
+                        BorderThickness="1"
+                        CornerRadius="10"
+                        MinWidth="100"
+                        Padding="14,7">
+                    <TextBlock x:Name="ProtectionStateText"
+                               Text="检查中"
+                               Foreground="{StaticResource StatusUnknownBrush}"
+                               FontSize="13"
+                               FontWeight="SemiBold"
+                               HorizontalAlignment="Center"/>
+                </Border>
+            </StackPanel>
         </DockPanel>
 
-        <Grid Grid.Row="1" Margin="0,0,0,16">
+        <!-- Top 4 KPI Cards -->
+        <Grid Grid.Row="1" Margin="0,0,0,14">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
-            <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,8,0">
-                <StackPanel><TextBlock Text="VPN 网卡" Foreground="{StaticResource MutedBrush}" FontSize="13"/><TextBlock x:Name="AdapterText" Text="—" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0"/></StackPanel>
-            </Border>
-            <Border Grid.Column="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="8,0">
+            <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,6,0">
                 <StackPanel>
-                    <TextBlock Text="IPv4 出口" Foreground="{StaticResource MutedBrush}" FontSize="13"/>
-                    <TextBlock x:Name="ExitIpText" Text="—" FontSize="16" FontWeight="SemiBold" Margin="0,9,0,0"/>
-                    <TextBlock x:Name="ExitIpv6Text" Text="IPv6 出口检测中" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0"/>
+                    <TextBlock Text="VPN / TUN 网卡" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBlock x:Name="AdapterText" Text="—" FontSize="16" FontWeight="SemiBold" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="ProxyClientText" Text="代理客户端检测中" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
                 </StackPanel>
             </Border>
-            <Border Grid.Column="2" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="8,0">
-                <StackPanel><TextBlock Text="DNS" Foreground="{StaticResource MutedBrush}" FontSize="13"/><TextBlock x:Name="DnsText" Text="—" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0" TextTrimming="CharacterEllipsis"/></StackPanel>
+            <Border Grid.Column="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="6,0">
+                <StackPanel>
+                    <TextBlock Text="IPv4 &amp; IPv6 出口" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBlock x:Name="ExitIpText" Text="—" FontSize="15.5" FontWeight="SemiBold" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="ExitIpv6Text" Text="IPv6 出口检测中" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
             </Border>
-            <Border Grid.Column="3" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="14" Padding="16" Margin="8,0,0,0">
-                <StackPanel><TextBlock Text="Claude 进程" Foreground="{StaticResource MutedBrush}" FontSize="13"/><TextBlock x:Name="ProcessText" Text="—" FontSize="18" FontWeight="SemiBold" Margin="0,9,0,0"/></StackPanel>
+            <Border Grid.Column="2" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="6,0">
+                <StackPanel>
+                    <TextBlock Text="DNS &amp; 路由" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBlock x:Name="DnsText" Text="—" FontSize="15.5" FontWeight="SemiBold" Margin="0,6,0,0" TextTrimming="CharacterEllipsis"/>
+                    <TextBlock x:Name="DnsSubText" Text="等待 DNS 隧道验证" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="3" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="6,0,0,0">
+                <StackPanel>
+                    <TextBlock Text="Claude 进程与账号" Foreground="{StaticResource MutedBrush}" FontSize="12"/>
+                    <TextBlock x:Name="ProcessText" Text="—" FontSize="16" FontWeight="SemiBold" Margin="0,6,0,0"/>
+                    <TextBlock x:Name="AccountSubText" Text="当前账号槽位：未绑定" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,4,0,0" TextTrimming="CharacterEllipsis"/>
+                </StackPanel>
             </Border>
         </Grid>
 
-        <Grid Grid.Row="2">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="1.1*"/>
-                <ColumnDefinition Width="0.9*"/>
-            </Grid.ColumnDefinitions>
-            <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="14" Padding="18" Margin="0,0,8,0">
-                <DockPanel>
-                    <TextBlock DockPanel.Dock="Top" Text="环境检查" FontSize="20" FontWeight="SemiBold" Margin="0,0,0,14"/>
-                    <ListView x:Name="ChecksList"
-                              Background="Transparent"
-                              BorderThickness="0"
-                              ScrollViewer.VerticalScrollBarVisibility="Auto"
-                              ScrollViewer.HorizontalScrollBarVisibility="Disabled">
-                        <ListView.View>
-                            <GridView>
-                                <GridViewColumn Header="检查项" Width="150">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding Title}"
-                                                       Foreground="{StaticResource TextBrush}"
-                                                       FontSize="13"
-                                                       VerticalAlignment="Center"/>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="状态" Width="90">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding Status}"
-                                                       FontSize="13"
-                                                       FontWeight="SemiBold"
-                                                       VerticalAlignment="Center">
-                                                <TextBlock.Style>
-                                                    <Style TargetType="{x:Type TextBlock}">
-                                                        <Setter Property="Foreground" Value="{StaticResource StatusUnknownBrush}"/>
-                                                        <Style.Triggers>
-                                                            <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Ok}">
-                                                                <Setter Property="Foreground" Value="{StaticResource StatusOkBrush}"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Warn}">
-                                                                <Setter Property="Foreground" Value="{StaticResource StatusWarnBrush}"/>
-                                                            </DataTrigger>
-                                                            <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Fail}">
-                                                                <Setter Property="Foreground" Value="{StaticResource StatusErrorBrush}"/>
-                                                            </DataTrigger>
-                                                        </Style.Triggers>
-                                                    </Style>
-                                                </TextBlock.Style>
-                                            </TextBlock>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                                <GridViewColumn Header="详情" Width="430">
-                                    <GridViewColumn.CellTemplate>
-                                        <DataTemplate>
-                                            <TextBlock Text="{Binding Detail}"
-                                                       Foreground="{StaticResource MutedBrush}"
-                                                       FontSize="13"
-                                                       TextTrimming="CharacterEllipsis"
-                                                       ToolTip="{Binding Detail}"
-                                                       VerticalAlignment="Center"/>
-                                        </DataTemplate>
-                                    </GridViewColumn.CellTemplate>
-                                </GridViewColumn>
-                            </GridView>
-                        </ListView.View>
-                    </ListView>
-                </DockPanel>
-            </Border>
-            <Border Grid.Column="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="14" Padding="18" Margin="8,0,0,0">
+        <!-- Compact Top TabControl -->
+        <TabControl x:Name="MainTabControl"
+                    Grid.Row="2"
+                    Style="{StaticResource GuardianTabControlStyle}">
+            <!-- TAB 1: Environment Monitor -->
+            <TabItem Header="环境监控" Style="{StaticResource GuardianTabItemStyle}">
+                <Grid>
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.22*"/>
+                        <ColumnDefinition Width="0.78*"/>
+                    </Grid.ColumnDefinitions>
+
+                    <!-- Left: Checks Table with per-row Retest -->
+                    <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,7,0">
+                        <DockPanel>
+                            <DockPanel DockPanel.Dock="Top" Margin="0,0,0,10">
+                                <TextBlock Text="环境检查矩阵" FontSize="16" FontWeight="SemiBold"/>
+                                <TextBlock x:Name="CheckSummaryText"
+                                           DockPanel.Dock="Right"
+                                           Text="等待首轮检查"
+                                           Foreground="{StaticResource MutedBrush}"
+                                           FontSize="12"
+                                           VerticalAlignment="Center"/>
+                            </DockPanel>
+                            <ListView x:Name="ChecksList"
+                                      Background="Transparent"
+                                      BorderThickness="0"
+                                      ScrollViewer.VerticalScrollBarVisibility="Auto"
+                                      ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+                                <ListView.View>
+                                    <GridView>
+                                        <GridViewColumn Header="检查项" Width="138">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Title}"
+                                                               Foreground="{StaticResource TextBrush}"
+                                                               FontSize="12.5"
+                                                               VerticalAlignment="Center"/>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="状态" Width="82">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding StatusLabel}"
+                                                               FontSize="12.5"
+                                                               FontWeight="SemiBold"
+                                                               VerticalAlignment="Center">
+                                                        <TextBlock.Style>
+                                                            <Style TargetType="{x:Type TextBlock}">
+                                                                <Setter Property="Foreground" Value="{StaticResource StatusUnknownBrush}"/>
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Ok}">
+                                                                        <Setter Property="Foreground" Value="{StaticResource StatusOkBrush}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Warn}">
+                                                                        <Setter Property="Foreground" Value="{StaticResource StatusWarnBrush}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Fail}">
+                                                                        <Setter Property="Foreground" Value="{StaticResource StatusErrorBrush}"/>
+                                                                    </DataTrigger>
+                                                                    <DataTrigger Binding="{Binding Status}" Value="{x:Static core:CheckStatus.Skip}">
+                                                                        <Setter Property="Foreground" Value="{StaticResource StatusSkipBrush}"/>
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </TextBlock.Style>
+                                                    </TextBlock>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="详情" Width="345">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <TextBlock Text="{Binding Detail}"
+                                                               Foreground="{StaticResource MutedBrush}"
+                                                               FontSize="12.5"
+                                                               TextTrimming="CharacterEllipsis"
+                                                               ToolTip="{Binding Detail}"
+                                                               VerticalAlignment="Center"/>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                        <GridViewColumn Header="操作" Width="62">
+                                            <GridViewColumn.CellTemplate>
+                                                <DataTemplate>
+                                                    <Button Content="复检"
+                                                            Tag="{Binding Id}"
+                                                            Style="{StaticResource MiniRowButtonStyle}"
+                                                            Click="RetestCheckButton_Click"/>
+                                                </DataTemplate>
+                                            </GridViewColumn.CellTemplate>
+                                        </GridViewColumn>
+                                    </GridView>
+                                </ListView.View>
+                            </ListView>
+                        </DockPanel>
+                    </Border>
+
+                    <!-- Right: Live Evidence & WFP Quick Controls -->
+                    <Border Grid.Column="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="7,0,0,0">
+                        <ScrollViewer VerticalScrollBarVisibility="Auto">
+                            <StackPanel>
+                                <TextBlock Text="实时证据与内核策略" FontSize="16" FontWeight="SemiBold"/>
+
+                                <Border Background="{StaticResource SubCardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="10" Padding="12" Margin="0,12,0,0">
+                                    <StackPanel>
+                                        <TextBlock Text="WFP 内核级 TUN-only 出站锁" FontSize="12.5" FontWeight="SemiBold" Foreground="{StaticResource AccentHoverBrush}"/>
+                                        <TextBlock x:Name="WfpDetailText" Text="正在读取 WFP 状态…" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,10"/>
+                                        <StackPanel Orientation="Horizontal">
+                                            <Button x:Name="BtnEnableWfpQuick" Content="启用 / 刷新 WFP" Style="{StaticResource SecondaryButtonStyle}" Padding="10,5" FontSize="12" Click="EnableWfpButton_Click" Margin="0,0,8,0"/>
+                                            <Button x:Name="BtnDisableWfpQuick" Content="移除 WFP" Style="{StaticResource DangerButtonStyle}" Padding="10,5" FontSize="12" Click="DisableWfpButton_Click"/>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Text="WebRTC STUN &amp; 浏览器 ICE" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,14,0,5"/>
+                                <TextBox x:Name="WebRtcText" IsReadOnly="True" TextWrapping="Wrap" Background="{StaticResource FieldBrush}" BorderBrush="{StaticResource LineBrush}" Foreground="{StaticResource TextBrush}" FontFamily="Consolas" FontSize="11.5" MinHeight="92" MaxHeight="170" VerticalScrollBarVisibility="Auto" Padding="9"/>
+
+                                <TextBlock Text="Claude 活动 TCP 连接" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,14,0,5"/>
+                                <TextBox x:Name="ConnectionsText" IsReadOnly="True" TextWrapping="Wrap" Background="{StaticResource FieldBrush}" BorderBrush="{StaticResource LineBrush}" Foreground="{StaticResource TextBrush}" FontFamily="Consolas" FontSize="11.5" MinHeight="74" MaxHeight="140" VerticalScrollBarVisibility="Auto" Padding="9"/>
+
+                                <TextBlock Text="时区与地区" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,14,0,5"/>
+                                <TextBlock x:Name="TimezoneText" Text="出口时区检测中" Foreground="{StaticResource TextBrush}" FontSize="12.5" TextWrapping="Wrap"/>
+                                <TextBlock x:Name="TimezoneStatusText" Text="系统时区检测中" Foreground="{StaticResource MutedBrush}" FontSize="11.5" TextWrapping="Wrap" Margin="0,4,0,0"/>
+                                <TextBlock x:Name="LocaleStatusText" Text="地区格式检测中" Foreground="{StaticResource MutedBrush}" FontSize="11.5" TextWrapping="Wrap" Margin="0,4,0,0"/>
+
+                                <TextBlock Text="断网 / 阻断原因" Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,14,0,5"/>
+                                <TextBlock x:Name="TripReasonText" Text="暂无" TextWrapping="Wrap" Foreground="{StaticResource StatusWarnBrush}" FontSize="12.5"/>
+                            </StackPanel>
+                        </ScrollViewer>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 2: Multi-Account & Encrypted Snapshots -->
+            <TabItem Header="多账号管理" Style="{StaticResource GuardianTabItemStyle}">
                 <ScrollViewer VerticalScrollBarVisibility="Auto">
                     <StackPanel>
-                        <TextBlock Text="实时数据" FontSize="20" FontWeight="SemiBold"/>
-                        <TextBlock Text="WebRTC STUN" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,20,0,6"/>
-                        <TextBox x:Name="WebRtcText" IsReadOnly="True" TextWrapping="Wrap" Background="{StaticResource FieldBrush}" BorderBrush="{StaticResource LineBrush}" Foreground="{StaticResource TextBrush}" FontFamily="Consolas" FontSize="12" MinHeight="96" Padding="10"/>
-                        <TextBlock Text="活动连接" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,20,0,6"/>
-                        <TextBox x:Name="ConnectionsText" IsReadOnly="True" TextWrapping="Wrap" Background="{StaticResource FieldBrush}" BorderBrush="{StaticResource LineBrush}" Foreground="{StaticResource TextBrush}" FontFamily="Consolas" FontSize="12" MinHeight="96" Padding="10"/>
-                        <TextBlock Text="时区" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,20,0,6"/>
-                        <TextBlock x:Name="TimezoneText" Text="出口时区检测中" Foreground="{StaticResource TextBrush}" FontSize="13" TextWrapping="Wrap"/>
-                        <TextBlock x:Name="TimezoneStatusText" Text="系统时区检测中" Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0"/>
-                        <TextBlock Text="断网原因" Foreground="{StaticResource MutedBrush}" FontSize="13" Margin="0,20,0,6"/>
-                        <TextBlock x:Name="TripReasonText" Text="暂无" TextWrapping="Wrap" Foreground="{StaticResource StatusWarnBrush}" FontSize="13"/>
+                        <!-- Slot Switching -->
+                        <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <DockPanel Margin="0,0,0,10">
+                                    <StackPanel>
+                                        <TextBlock Text="A–D 账号隔离槽位（Fail-Closed 事务切换）" FontSize="16" FontWeight="SemiBold"/>
+                                        <TextBlock Text="仅在环境检查通过时允许切换；先安全暂存新槽位再换位，失败自动回滚。首次切换自动将现有 Claude 数据归档到槽位 A。"
+                                                   Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,4,0,0"/>
+                                    </StackPanel>
+                                    <Button x:Name="BtnRefreshAccounts" DockPanel.Dock="Right" Content="刷新槽位" Style="{StaticResource SecondaryButtonStyle}" Padding="12,6" VerticalAlignment="Center" Click="RefreshAccountsButton_Click"/>
+                                </DockPanel>
+
+                                <Grid Margin="0,4,0,0">
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="*"/>
+                                    </Grid.ColumnDefinitions>
+
+                                    <Border x:Name="SlotCardA" Grid.Column="0" Background="{StaticResource SubCardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="10" Padding="14" Margin="0,0,6,0">
+                                        <StackPanel>
+                                            <TextBlock Text="槽位 A" FontSize="17" FontWeight="Bold" Foreground="{StaticResource AccentHoverBrush}"/>
+                                            <TextBlock x:Name="SlotStatusA" Text="加载中…" FontSize="12.5" Margin="0,6,0,0"/>
+                                            <TextBlock x:Name="SlotTimeA" Text="—" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,3,0,12"/>
+                                            <Button x:Name="BtnSwitchA" Content="切换到 A" Tag="A" Style="{StaticResource PrimaryButtonStyle}" Padding="10,6" Click="SwitchAccountButton_Click"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border x:Name="SlotCardB" Grid.Column="1" Background="{StaticResource SubCardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="10" Padding="14" Margin="6,0">
+                                        <StackPanel>
+                                            <TextBlock Text="槽位 B" FontSize="17" FontWeight="Bold" Foreground="{StaticResource AccentHoverBrush}"/>
+                                            <TextBlock x:Name="SlotStatusB" Text="加载中…" FontSize="12.5" Margin="0,6,0,0"/>
+                                            <TextBlock x:Name="SlotTimeB" Text="—" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,3,0,12"/>
+                                            <Button x:Name="BtnSwitchB" Content="切换到 B" Tag="B" Style="{StaticResource SecondaryButtonStyle}" Padding="10,6" Click="SwitchAccountButton_Click"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border x:Name="SlotCardC" Grid.Column="2" Background="{StaticResource SubCardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="10" Padding="14" Margin="6,0">
+                                        <StackPanel>
+                                            <TextBlock Text="槽位 C" FontSize="17" FontWeight="Bold" Foreground="{StaticResource AccentHoverBrush}"/>
+                                            <TextBlock x:Name="SlotStatusC" Text="加载中…" FontSize="12.5" Margin="0,6,0,0"/>
+                                            <TextBlock x:Name="SlotTimeC" Text="—" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,3,0,12"/>
+                                            <Button x:Name="BtnSwitchC" Content="切换到 C" Tag="C" Style="{StaticResource SecondaryButtonStyle}" Padding="10,6" Click="SwitchAccountButton_Click"/>
+                                        </StackPanel>
+                                    </Border>
+                                    <Border x:Name="SlotCardD" Grid.Column="3" Background="{StaticResource SubCardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="10" Padding="14" Margin="6,0,0,0">
+                                        <StackPanel>
+                                            <TextBlock Text="槽位 D" FontSize="17" FontWeight="Bold" Foreground="{StaticResource AccentHoverBrush}"/>
+                                            <TextBlock x:Name="SlotStatusD" Text="加载中…" FontSize="12.5" Margin="0,6,0,0"/>
+                                            <TextBlock x:Name="SlotTimeD" Text="—" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,3,0,12"/>
+                                            <Button x:Name="BtnSwitchD" Content="切换到 D" Tag="D" Style="{StaticResource SecondaryButtonStyle}" Padding="10,6" Click="SwitchAccountButton_Click"/>
+                                        </StackPanel>
+                                    </Border>
+                                </Grid>
+
+                                <TextBlock x:Name="AccountActionStatusText" Text="" Foreground="{StaticResource AccentHoverBrush}" FontSize="12.5" Margin="0,12,0,0" TextWrapping="Wrap"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Encrypted .csnap Snapshot Section -->
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="1.1*"/>
+                                <ColumnDefinition Width="0.9*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="加密快照迁移（.csnap / CSNAP001）" FontSize="15.5" FontWeight="SemiBold"/>
+                                    <TextBlock Text="PBKDF2-HMAC-SHA256 (200k) + AES-256-CBC + HMAC-SHA256 认证加密，与 claude-switcher 二进制完全互通。导出仅限非活跃槽位，导入仅限空槽位。"
+                                               Foreground="{StaticResource MutedBrush}" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,12"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="110"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="目标槽位" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <ComboBox x:Name="SnapshotSlotCombo" Grid.Row="0" Grid.Column="1" Style="{StaticResource GuardianComboBoxStyle}" Margin="0,0,0,8">
+                                            <ComboBoxItem Content="A" IsSelected="True"/>
+                                            <ComboBoxItem Content="B"/>
+                                            <ComboBoxItem Content="C"/>
+                                            <ComboBoxItem Content="D"/>
+                                        </ComboBox>
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="加密密码" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                                        <PasswordBox x:Name="SnapshotPasswordBox" Grid.Row="1" Grid.Column="1" Style="{StaticResource GuardianPasswordBoxStyle}" ToolTip="导出密码至少 8 位；操作完成后自动清空内存框"/>
+                                    </Grid>
+                                    <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                        <Button x:Name="BtnExportSnapshot" Content="导出 .csnap 快照" Style="{StaticResource PrimaryButtonStyle}" Click="ExportSnapshotButton_Click" Margin="0,0,10,0"/>
+                                        <Button x:Name="BtnImportSnapshot" Content="导入 .csnap 快照" Style="{StaticResource SecondaryButtonStyle}" Click="ImportSnapshotButton_Click"/>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Shared Keep Paths -->
+                            <Border Grid.Column="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="6,0,0,0">
+                                <StackPanel>
+                                    <DockPanel Margin="0,0,0,6">
+                                        <TextBlock Text="跨账号保留路径" FontSize="15.5" FontWeight="SemiBold"/>
+                                        <Button x:Name="BtnSaveKeepPaths" DockPanel.Dock="Right" Content="保存清单" Style="{StaticResource SecondaryButtonStyle}" Padding="10,4" FontSize="12" Click="SaveKeepPathsButton_Click"/>
+                                    </DockPanel>
+                                    <TextBlock Text="每行填写一个 Claude 数据目录内的相对路径（如 claude_desktop_config.json），切换账号时自动保留；支持 # 注释，禁止绝对路径与 ..。"
+                                               Foreground="{StaticResource MutedBrush}" FontSize="11.5" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                    <TextBox x:Name="KeepPathsTextBox"
+                                             Style="{StaticResource GuardianTextBoxStyle}"
+                                             AcceptsReturn="True"
+                                             TextWrapping="NoWrap"
+                                             VerticalContentAlignment="Top"
+                                             VerticalScrollBarVisibility="Auto"
+                                             FontFamily="Consolas"
+                                             FontSize="12"
+                                             Height="104"/>
+                                </StackPanel>
+                            </Border>
+                        </Grid>
                     </StackPanel>
                 </ScrollViewer>
-            </Border>
-        </Grid>
+            </TabItem>
+
+            <!-- TAB 3: Maintenance Toolbox -->
+            <TabItem Header="维护工具" Style="{StaticResource GuardianTabItemStyle}">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                    </Grid.RowDefinitions>
+
+                    <!-- Action Bar -->
+                    <Border Grid.Row="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,10">
+                        <WrapPanel>
+                            <Button x:Name="BtnOneClickFix" Content="一键修复环境" Style="{StaticResource PrimaryButtonStyle}" Click="OneClickFixButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnAdaptRegion" Content="重新适配出口地区" Style="{StaticResource SecondaryButtonStyle}" Click="AdaptRegionButton_Click" ToolTip="换节点后按当前非 CN 出口重新锁定国家、时区与地区格式" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnEnableWfpTool" Content="启用 / 刷新 WFP 锁" Style="{StaticResource SecondaryButtonStyle}" Click="EnableWfpButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnDisableWfpTool" Content="移除 WFP 锁" Style="{StaticResource DangerButtonStyle}" Click="DisableWfpButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnSyncLocale" Content="同步地区 Locale" Style="{StaticResource SecondaryButtonStyle}" Click="SyncLocaleButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnClashStatus" Content="Clash 规则状态" Style="{StaticResource SecondaryButtonStyle}" Click="ClashStatusButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnWriteClashRules" Content="修复 Clash 置顶规则" Style="{StaticResource SecondaryButtonStyle}" Click="WriteClashRulesButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnFingerprint" Content="设备指纹体检" Style="{StaticResource SecondaryButtonStyle}" Click="FingerprintButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnCliInfo" Content="CLI 体检" Style="{StaticResource SecondaryButtonStyle}" Click="CliInfoButton_Click" Margin="0,0,8,6"/>
+                            <Button x:Name="BtnExportDiagnostics" Content="导出脱敏诊断包 (.zip)" Style="{StaticResource SecondaryButtonStyle}" Click="ExportDiagnosticsButton_Click" Margin="0,0,8,6"/>
+                        </WrapPanel>
+                    </Border>
+
+                    <!-- Safe Browser + Standalone Proxy Diagnostics -->
+                    <Grid Grid.Row="1" Margin="0,0,0,10">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,6,0">
+                            <StackPanel>
+                                <TextBlock Text="一次性安全隔离浏览器" FontSize="13.5" FontWeight="SemiBold"/>
+                                <TextBlock Text="强制禁用扩展与非代理 UDP（WebRTC 防泄），关闭窗口自动销毁临时配置" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,3,0,8"/>
+                                <DockPanel>
+                                    <Button x:Name="BtnOpenSafeBrowser" DockPanel.Dock="Right" Content="安全打开" Style="{StaticResource SecondaryButtonStyle}" Padding="12,6" Click="OpenSafeBrowserButton_Click" Margin="8,0,0,0"/>
+                                    <TextBox x:Name="SafeBrowserUrlBox" Style="{StaticResource GuardianTextBoxStyle}" Text="https://browserleaks.com/webrtc"/>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+
+                        <Border Grid.Column="1" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14" Margin="6,0,0,0">
+                            <StackPanel>
+                                <TextBlock Text="独立代理传输诊断（仅测指定代理，不改系统配置）" FontSize="13.5" FontWeight="SemiBold"/>
+                                <TextBlock Text="支持 http://、https://、socks5://、socks5h://（需显式端口），探测 Anthropic API 与 Claude 网页" Foreground="{StaticResource MutedBrush}" FontSize="11.5" Margin="0,3,0,8"/>
+                                <DockPanel>
+                                    <Button x:Name="BtnDiagnoseProxy" DockPanel.Dock="Right" Content="运行诊断" Style="{StaticResource SecondaryButtonStyle}" Padding="12,6" Click="DiagnoseProxyButton_Click" Margin="8,0,0,0"/>
+                                    <Button x:Name="BtnPickProxyConfig" DockPanel.Dock="Right" Content="选配置…" Style="{StaticResource SecondaryButtonStyle}" Padding="10,6" Click="PickProxyConfigButton_Click" Margin="8,0,0,0" ToolTip="选择包含 proxy_url 的私有 JSON 配置文件（不写入客户端日志）"/>
+                                    <TextBox x:Name="ProxyDiagUrlBox" Style="{StaticResource GuardianTextBoxStyle}" Text="http://127.0.0.1:7897"/>
+                                </DockPanel>
+                            </StackPanel>
+                        </Border>
+                    </Grid>
+
+                    <!-- Output Console -->
+                    <Border Grid.Row="2" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="14">
+                        <DockPanel>
+                            <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                                <TextBlock Text="维护与诊断输出" FontSize="14" FontWeight="SemiBold"/>
+                                <Button DockPanel.Dock="Right" Content="清空输出" Style="{StaticResource MiniRowButtonStyle}" Click="ClearToolOutputButton_Click"/>
+                            </DockPanel>
+                            <TextBox x:Name="ToolOutputTextBox"
+                                     IsReadOnly="True"
+                                     TextWrapping="Wrap"
+                                     AcceptsReturn="True"
+                                     VerticalScrollBarVisibility="Auto"
+                                     Background="{StaticResource FieldBrush}"
+                                     BorderBrush="{StaticResource LineBrush}"
+                                     Foreground="{StaticResource TextBrush}"
+                                     FontFamily="Consolas"
+                                     FontSize="12"
+                                     Padding="10"
+                                     Text="点击上方工具按钮执行维护操作、体检或代理诊断。"/>
+                        </DockPanel>
+                    </Border>
+                </Grid>
+            </TabItem>
+
+            <!-- TAB 4: Settings & Policy -->
+            <TabItem Header="检查与防护设置" Style="{StaticResource GuardianTabItemStyle}">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel>
+                        <Grid Margin="0,0,0,12">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*"/>
+                                <ColumnDefinition Width="*"/>
+                            </Grid.ColumnDefinitions>
+
+                            <!-- Left: Basic Network & Proxy Settings -->
+                            <Border Grid.Column="0" Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,6,0">
+                                <StackPanel>
+                                    <TextBlock Text="基础网络与代理参数" FontSize="15.5" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="155"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+
+                                        <TextBlock Grid.Row="0" Grid.Column="0" Text="代理客户端模式" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <ComboBox x:Name="ProxyClientModeCombo" Grid.Row="0" Grid.Column="1" Style="{StaticResource GuardianComboBoxStyle}" DisplayMemberPath="Label" SelectedValuePath="Key" Margin="0,0,0,8"/>
+
+                                        <TextBlock Grid.Row="1" Grid.Column="0" Text="期望出口国家 (两位)" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <TextBox x:Name="ExpectedCountryBox" Grid.Row="1" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="例如 US、JP、SG；留空表示非 CN 即可" Margin="0,0,0,8"/>
+
+                                        <TextBlock Grid.Row="2" Grid.Column="0" Text="期望出口 IP (可选)" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <TextBox x:Name="ExpectedIpBox" Grid.Row="2" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="留空表示不锁定单一出口 IP" Margin="0,0,0,8"/>
+
+                                        <TextBlock Grid.Row="3" Grid.Column="0" Text="期望地区 Locale" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <TextBox x:Name="ExpectedLocaleBox" Grid.Row="3" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="例如 en-US、ja-JP；留空按出口国家自动推断" Margin="0,0,0,8"/>
+
+                                        <TextBlock Grid.Row="4" Grid.Column="0" Text="VPN 网卡关键词" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <TextBox x:Name="VpnPatternBox" Grid.Row="4" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="留空使用内置多客户端识别规则" Margin="0,0,0,8"/>
+
+                                        <TextBlock Grid.Row="5" Grid.Column="0" Text="FlClash 控制端口" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <TextBox x:Name="FlClashControllerBox" Grid.Row="5" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="留空或 auto 自动探测；仅允许本机 127.0.0.1:端口" Margin="0,0,0,8"/>
+
+                                        <TextBlock Grid.Row="6" Grid.Column="0" Text="Clash 置顶代理组" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <DockPanel Grid.Row="6" Grid.Column="1" Margin="0,0,0,8">
+                                            <Button x:Name="BtnDetectProxyGroup" DockPanel.Dock="Right" Content="自动识别" Style="{StaticResource SecondaryButtonStyle}" Padding="10,5" FontSize="12" Click="DetectProxyGroupButton_Click" Margin="8,0,0,0" ToolTip="从 clash-verge.yaml / config.yaml 自动读取首个 select 代理组"/>
+                                            <TextBox x:Name="ClashProxyGroupBox" Style="{StaticResource GuardianTextBoxStyle}"/>
+                                        </DockPanel>
+
+                                        <TextBlock Grid.Row="7" Grid.Column="0" Text="WebRTC 规则策略" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                        <ComboBox x:Name="WebRtcPolicyCombo" Grid.Row="7" Grid.Column="1" Style="{StaticResource GuardianComboBoxStyle}" DisplayMemberPath="Label" SelectedValuePath="Key" Margin="0,0,0,8" ToolTip="proxy=STUN UDP 走代理组；reject=拒绝 UDP 3478/5349/19302"/>
+
+                                        <TextBlock Grid.Row="8" Grid.Column="0" Text="轮询间隔 (轻秒 / 完分)" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                                        <Grid Grid.Row="8" Grid.Column="1">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*"/>
+                                                <ColumnDefinition Width="12"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <TextBox x:Name="LightIntervalBox" Grid.Column="0" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="轻量检查周期（2-60 秒）"/>
+                                            <TextBox x:Name="FullIntervalBox" Grid.Column="2" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="完整检查周期（1-180 分钟）"/>
+                                        </Grid>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+
+                            <!-- Right: Protection & IP Reputation -->
+                            <StackPanel Grid.Column="1" Margin="6,0,0,0">
+                                <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,12">
+                                    <StackPanel>
+                                        <TextBlock Text="双层防护与日志策略" FontSize="15.5" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                        <CheckBox x:Name="WfpStrictCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="启用 WFP 内核级 TUN-only 出站锁（严格模式）" Margin="0,0,0,8"
+                                                  ToolTip="开启后与防火墙急停双层协同：未生效时将被视为阻断异常；保存设置时自动尝试应用"/>
+                                        <CheckBox x:Name="WfpLoopbackCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="WFP 允许本机回环通信（127.0.0.1 / ::1，供本地 MCP/代理）" Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="AllowOptionalFailuresCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="非关键检查失败降级为警告（核心硬检查永不降级）" Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="LoggingEnabledCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="启用脱敏运行日志（logs\guardian.log，512 KiB 自动轮转）"/>
+                                    </StackPanel>
+                                </Border>
+
+                                <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16">
+                                    <StackPanel>
+                                        <TextBlock Text="可插拔 IP 信誉源（可选，仅 HTTPS + X-API-Key）" FontSize="15.5" FontWeight="SemiBold" Margin="0,0,0,10"/>
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="120"/>
+                                                <ColumnDefinition Width="*"/>
+                                            </Grid.ColumnDefinitions>
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                                <RowDefinition Height="Auto"/>
+                                            </Grid.RowDefinitions>
+
+                                            <TextBlock Grid.Row="0" Grid.Column="0" Text="数据源 URL" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                            <TextBox x:Name="IpRepUrlBox" Grid.Row="0" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="例如 https://api.ipapi.is/?q={ip}；留空表示关闭" Margin="0,0,0,8"/>
+
+                                            <TextBlock Grid.Row="1" Grid.Column="0" Text="API Key" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
+                                            <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,0,0,8">
+                                                <PasswordBox x:Name="IpRepKeyBox" Style="{StaticResource GuardianPasswordBoxStyle}"/>
+                                                <TextBlock x:Name="IpRepKeyStatusText" Text="未配置密钥" Foreground="{StaticResource MutedBrush}" FontSize="11" Margin="2,3,0,0"/>
+                                            </StackPanel>
+
+                                            <TextBlock Grid.Row="2" Grid.Column="0" Text="阈值 / 缓存天数" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}"/>
+                                            <Grid Grid.Row="2" Grid.Column="1">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="12"/>
+                                                    <ColumnDefinition Width="*"/>
+                                                </Grid.ColumnDefinitions>
+                                                <TextBox x:Name="IpRepThresholdBox" Grid.Column="0" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="风险分阈值 0-100（默认 25）"/>
+                                                <TextBox x:Name="IpRepCacheDaysBox" Grid.Column="2" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="缓存有效期 1-90 天（默认 7）"/>
+                                            </Grid>
+                                        </Grid>
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+
+                        <!-- Optional Check Toggles -->
+                        <Border Background="{StaticResource CardBrush}" BorderBrush="{StaticResource LineBrush}" BorderThickness="1" CornerRadius="12" Padding="16" Margin="0,0,0,12">
+                            <StackPanel>
+                                <TextBlock Text="可选检查项开关（关闭后在面板标为「已跳过」，绝不伪装成通过）" FontSize="15.5" FontWeight="SemiBold" Margin="0,0,0,4"/>
+                                <TextBlock Text="核心硬检查（代理客户端、VPN/TUN 网卡、默认路由、出口 IP、IPv6 路由/出口、管理员助手、防火墙保护、活动连接、WFP 严格模式及已确认的 WebRTC 泄露）始终不可关闭或降级。"
+                                           Foreground="{StaticResource MutedBrush}" FontSize="12" Margin="0,0,0,10" TextWrapping="Wrap"/>
+                                <UniformGrid x:Name="OptionalChecksPanel" Columns="3"/>
+                            </StackPanel>
+                        </Border>
+
+                        <!-- Save / Reset Bar -->
+                        <DockPanel>
+                            <TextBlock x:Name="SettingsStatusText" Text="" Foreground="{StaticResource AccentHoverBrush}" VerticalAlignment="Center" FontSize="12.5" TextWrapping="Wrap"/>
+                            <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
+                                <Button x:Name="BtnResetSettings" Content="恢复默认" Style="{StaticResource SecondaryButtonStyle}" Click="ResetSettingsButton_Click" Margin="0,0,10,0"/>
+                                <Button x:Name="BtnSaveSettings" Content="保存设置并重新检查" Style="{StaticResource PrimaryButtonStyle}" Click="SaveSettingsButton_Click"/>
+                            </StackPanel>
+                        </DockPanel>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
 
         <wv2:WebView2 x:Name="WebRtcWebView"
-                     Visibility="Collapsed"
-                     Width="1"
-                     Height="1"/>
+                      Visibility="Collapsed"
+                      Width="1"
+                      Height="1"/>
 
-        <DockPanel Grid.Row="3" Margin="0,16,0,0">
-            <TextBlock x:Name="LastCheckText" Text="尚未检查" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center"/>
+        <!-- Bottom Action Footer -->
+        <DockPanel Grid.Row="3" Margin="0,12,0,0">
+            <TextBlock x:Name="LastCheckText" Text="尚未检查" Foreground="{StaticResource MutedBrush}" VerticalAlignment="Center" FontSize="12.5"/>
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                 <CheckBox x:Name="IgnoreWebRtcCheckBox"
-                          Content="忽略 WebRTC 阻断"
-                          Foreground="{StaticResource TextBrush}"
-                          VerticalAlignment="Center"
+                          Style="{StaticResource GuardianCheckBoxStyle}"
+                          Content="忽略 WebRTC 未验证"
                           ToolTip="继续显示 WebRTC 检测结果，仅忽略未验证状态；确认泄露时仍会自动断网"
                           Click="IgnoreWebRtcCheckBox_Click"
                           Margin="0,0,14,0"/>
-                <Button x:Name="CheckButton" Content="立即检查" Style="{StaticResource PrimaryButtonStyle}" Click="CheckButton_Click" Padding="18,10" Margin="0,0,8,0"/>
-                <Button x:Name="RecoverButton" Content="检查并解除阻断" Style="{StaticResource SecondaryButtonStyle}" Click="RecoverButton_Click" Padding="18,10"/>
+                <Button x:Name="BtnLaunchClaude" Content="安全启动 Claude" Style="{StaticResource SecondaryButtonStyle}" Click="LaunchClaudeButton_Click" Padding="14,9" Margin="0,0,8,0" ToolTip="仅在未阻断且硬性环境检查全部通过时启动 Claude Desktop（支持 EXE 与 MSIX）"/>
+                <Button x:Name="CheckButton" Content="立即完整检查" Style="{StaticResource PrimaryButtonStyle}" Click="CheckButton_Click" Padding="16,9" Margin="0,0,8,0"/>
+                <Button x:Name="RecoverButton" Content="检查并解除阻断" Style="{StaticResource SecondaryButtonStyle}" Click="RecoverButton_Click" Padding="16,9"/>
             </StackPanel>
         </DockPanel>
     </Grid>
 </Window>
-

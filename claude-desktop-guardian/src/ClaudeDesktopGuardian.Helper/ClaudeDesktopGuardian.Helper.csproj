@@ -8,6 +8,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ClaudeDesktopGuardian.Core\ClaudeDesktopGuardian.Core.csproj" />
+    <InternalsVisibleTo Include="ClaudeDesktopGuardian.Tests" />
   </ItemGroup>
 </Project>
 

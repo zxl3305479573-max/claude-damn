@@ -17,12 +17,16 @@ public partial class MiniStatusWindow : Window
         System.Windows.Media.Brush statusBrush,
         string exitIp,
         string adapter,
-        string lastCheck)
+        string lastCheck,
+        string wfpStatus = "",
+        string accountSlot = "")
     {
         StatusText.Text = status;
         StatusText.Foreground = statusBrush;
         ExitIpText.Text = exitIp;
         AdapterText.Text = adapter;
+        WfpStatusText.Text = string.IsNullOrWhiteSpace(wfpStatus) ? "WFP：未启用" : wfpStatus;
+        AccountSlotText.Text = string.IsNullOrWhiteSpace(accountSlot) ? "槽位：未绑定" : accountSlot;
         LastCheckText.Text = lastCheck;
     }
 

@@ -11,6 +11,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="..\ClaudeDesktopGuardian.Core\ClaudeDesktopGuardian.Core.csproj" />
+    <InternalsVisibleTo Include="ClaudeDesktopGuardian.Tests" />
     <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4370.26" />
     <Content Include="web\webrtc\**\*">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
