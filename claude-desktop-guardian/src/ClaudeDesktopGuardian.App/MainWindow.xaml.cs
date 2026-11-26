@@ -1,18 +1,13 @@
 using System.Collections.ObjectModel;
 using System.Diagnostics;
-using System.Globalization;
 using System.IO;
-using System.IO.Pipes;
-using System.Text;
-using System.Text.Json;
-using System.Text.RegularExpressions;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Forms;
 using ClaudeDesktopGuardian.Core;
 using WpfBrush = System.Windows.Media.Brush;
 using WpfButton = System.Windows.Controls.Button;
 using WpfCheckBox = System.Windows.Controls.CheckBox;
-using WpfComboBoxItem = System.Windows.Controls.ComboBoxItem;
 using WpfMessageBox = System.Windows.MessageBox;
 
 namespace ClaudeDesktopGuardian.App;
@@ -45,6 +40,7 @@ public partial class MainWindow : Window
     private bool _operationInProgress;
     private bool _timezoneRecoveryReady;
     private string _timezoneOperationError = string.Empty;
+    private string? _selectedCheckId;
     private DateTimeOffset _lastFullCheck = DateTimeOffset.MinValue;
 
     public MainWindow()
@@ -142,67 +138,6 @@ public partial class MainWindow : Window
         };
     }
 
-    private void InitializeSettingsUi()
-    {
-        ProxyClientModeCombo.ItemsSource = ProxyClientModes.All
-            .Select(key => new ProxyModeOption(key, ProxyClientModes.DisplayName(key)))
-            .ToArray();
-
-        WebRtcPolicyCombo.ItemsSource = new[]
-        {
-            new ProxyModeOption(WebRtcPolicies.Proxy, WebRtcPolicies.DisplayName(WebRtcPolicies.Proxy)),
-            new ProxyModeOption(WebRtcPolicies.Reject, WebRtcPolicies.DisplayName(WebRtcPolicies.Reject))
-        };
-
-        OptionalChecksPanel.Children.Clear();
-        _optionalCheckBoxes.Clear();
-        foreach (var id in GuardianCheckIds.OptionalIds)
-        {
-            var title = GuardianCheckIds.OptionalTitles.GetValueOrDefault(id, id);
-            var cb = new WpfCheckBox
-            {
-                Content = title,
-                Style = (Style)FindResource("GuardianCheckBoxStyle"),
-                Margin = new Thickness(0, 4, 12, 4),
-                IsChecked = true
-            };
-            _optionalCheckBoxes[id] = cb;
-            OptionalChecksPanel.Children.Add(cb);
-        }
-    }
-
-    private void LoadConfigToUi(GuardianConfig cfg)
-    {
-        ProxyClientModeCombo.SelectedValue = ProxyClientModes.Normalize(cfg.ProxyClientMode);
-        WebRtcPolicyCombo.SelectedValue = WebRtcPolicies.Normalize(cfg.WebRtcPolicy);
-        ExpectedCountryBox.Text = cfg.ExpectedExitCountry ?? string.Empty;
-        ExpectedIpBox.Text = cfg.ExpectedExitIp ?? string.Empty;
-        ExpectedLocaleBox.Text = cfg.ExpectedLocale ?? string.Empty;
-        VpnPatternBox.Text = cfg.VpnAdapterPattern ?? string.Empty;
-        FlClashControllerBox.Text = cfg.FlClashController ?? string.Empty;
-        ClashProxyGroupBox.Text = cfg.ClashProxyGroup;
-        LightIntervalBox.Text = cfg.LightIntervalSeconds.ToString(CultureInfo.InvariantCulture);
-        FullIntervalBox.Text = cfg.FullIntervalMinutes.ToString(CultureInfo.InvariantCulture);
-
-        WfpStrictCheckBox.IsChecked = cfg.WfpStrictEnabled;
-        WfpLoopbackCheckBox.IsChecked = cfg.WfpAllowLoopback;
-        AllowOptionalFailuresCheckBox.IsChecked = cfg.AllowOptionalFailures;
-        LoggingEnabledCheckBox.IsChecked = cfg.LoggingEnabled;
-
-        foreach (var (id, cb) in _optionalCheckBoxes)
-        {
-            cb.IsChecked = !cfg.IsCheckDisabled(id);
-        }
-
-        IpRepUrlBox.Text = cfg.IpReputation?.Url ?? string.Empty;
-        IpRepKeyBox.Clear();
-        IpRepKeyStatusText.Text = !string.IsNullOrEmpty(cfg.IpReputation?.Key)
-            ? "已配置 API Key（留空且 URL 未变时保持原密钥）"
-            : "未配置 API Key";
-        IpRepThresholdBox.Text = (cfg.IpReputation?.Threshold ?? 25).ToString("0.#", CultureInfo.InvariantCulture);
-        IpRepCacheDaysBox.Text = (cfg.IpReputation?.CacheDays ?? 7).ToString(CultureInfo.InvariantCulture);
-    }
-
     private bool TryBeginOperation(string statusHint)
     {
         if (_operationInProgress)
@@ -234,6 +169,7 @@ public partial class MainWindow : Window
             RecoverButton,
             BtnEnableWfpQuick,
             BtnDisableWfpQuick,
+            BtnReconnectHelperQuick,
             BtnRefreshAccounts,
             BtnSwitchA,
             BtnSwitchB,
@@ -243,6 +179,7 @@ public partial class MainWindow : Window
             BtnImportSnapshot,
             BtnSaveKeepPaths,
             BtnOneClickFix,
+            BtnReconnectHelperTool,
             BtnAdaptRegion,
             BtnEnableWfpTool,
             BtnDisableWfpTool,
@@ -381,7 +318,6 @@ public partial class MainWindow : Window
                 return;
             }
 
-            // Always issue idempotent clear-block and wfp-disable on clean exit so no persistent rules stay behind
             var clearRes = await SendHelperAsync("clear-block", _lastReport);
             if (clearRes.Success)
             {
@@ -399,6 +335,33 @@ public partial class MainWindow : Window
         {
             ShowFromTray();
             WpfMessageBox.Show($"退出恢复时发生错误：{ex.Message}", "退出失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private void ChecksList_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (ChecksList.SelectedItem is CheckResult selected)
+        {
+            _selectedCheckId = selected.Id;
+            SelectedEvidenceHeaderText.Text = $"选中项：{selected.Title} ({selected.Id})";
+            SelectedEvidenceText.Text = UiPresentationState.FormatCheckEvidence(selected);
+        }
+    }
+
+    private void CopyEvidenceButton_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var text = SelectedEvidenceText.Text;
+            if (!string.IsNullOrWhiteSpace(text))
+            {
+                System.Windows.Clipboard.SetText(text);
+                LastCheckText.Text = $"已复制选中项 Evidence 到剪贴板（{DateTime.Now:HH:mm:ss}）";
+            }
+        }
+        catch (Exception ex)
+        {
+            LastCheckText.Text = $"复制剪贴板失败：{ex.Message}";
         }
     }
 
@@ -431,12 +394,13 @@ public partial class MainWindow : Window
         try
         {
             LastCheckText.Text = $"正在单项复检 {checkId}…";
+            using var retestTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
             var report = _lastReport is null
-                ? await _engine.RunAsync(_config, full: true, CancellationToken.None)
-                : await _engine.RunSingleCheckAsync(_lastReport, checkId, _config, CancellationToken.None);
+                ? await _engine.RunAsync(_config, full: true, retestTimeout.Token)
+                : await _engine.RunSingleCheckAsync(_lastReport, checkId, _config, retestTimeout.Token);
             _lastReport = report;
+            _selectedCheckId = checkId;
             Render(report);
-            // Single-item retest can trip a block if it fails, but never auto-clears an existing block
             await ApplyProtectionDecisionAsync(report, allowClearBlock: false);
             sw.Stop();
             var single = report.Checks.FirstOrDefault(c => string.Equals(c.Id, checkId, StringComparison.OrdinalIgnoreCase));
@@ -495,8 +459,9 @@ public partial class MainWindow : Window
             var helperResult = await SendHelperAsync("clear-block", report);
             if (!helperResult.Success)
             {
+                TripReasonText.Text = $"解除阻断失败：{helperResult.Detail}";
                 WpfMessageBox.Show(
-                    $"管理员助手没有确认解除阻断：{helperResult.Detail}",
+                    $"无法解除防火墙阻断：{helperResult.Detail}",
                     "恢复失败",
                     MessageBoxButton.OK,
                     MessageBoxImage.Warning);
@@ -514,820 +479,6 @@ public partial class MainWindow : Window
         {
             EndOperation();
         }
-    }
-
-    private async void EnableWfpButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在启用/刷新 WFP 内核出站锁…"))
-        {
-            return;
-        }
-
-        try
-        {
-            if (_lastReport is null || string.IsNullOrWhiteSpace(_lastReport.Network.AdapterGuid))
-            {
-                await RunCheckAsync(true);
-            }
-
-            var adapterGuid = _lastReport?.Network.AdapterGuid ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(adapterGuid))
-            {
-                AppendToolOutput("[失败] 当前未检测到在线 VPN/TUN 网卡，无法启用 WFP 出站锁。");
-                return;
-            }
-
-            var sw = Stopwatch.StartNew();
-            var result = await SendHelperAsync(
-                "wfp-enable",
-                _lastReport,
-                adapterGuid: adapterGuid,
-                allowLoopback: _config.WfpAllowLoopback);
-            sw.Stop();
-            AppendToolOutput(result.Success
-                ? $"[通过] {result.Detail}"
-                : $"[失败] 启用 WFP 出站锁失败：{result.Detail}");
-            _logger.LogAction("wfp-enable", result.Success ? "ok" : "fail", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-            await RunCheckAsync(true);
-        }
-        catch (Exception ex)
-        {
-            AppendToolOutput($"[失败] 启用 WFP 异常：{ex.Message}");
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private async void DisableWfpButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在移除 WFP 内核出站锁…"))
-        {
-            return;
-        }
-
-        try
-        {
-            var sw = Stopwatch.StartNew();
-            var result = await SendHelperAsync("wfp-disable", null);
-            sw.Stop();
-            AppendToolOutput(result.Success
-                ? $"[通过] {result.Detail}"
-                : $"[失败] 移除 WFP 出站锁失败：{result.Detail}");
-            _logger.LogAction("wfp-disable", result.Success ? "ok" : "fail", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-            await RunCheckAsync(true);
-        }
-        catch (Exception ex)
-        {
-            AppendToolOutput($"[失败] 移除 WFP 异常：{ex.Message}");
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private async void AdaptRegionButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在按当前出口重新适配国家、时区与 Locale…"))
-        {
-            return;
-        }
-
-        var sw = Stopwatch.StartNew();
-        var log = new StringBuilder();
-        log.AppendLine($"# 重新适配出口地区 (set-region) {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        try
-        {
-            var probeRes = await _environmentProbe.ProbeRegionForAdaptAsync(_config, CancellationToken.None);
-            if (!probeRes.Success)
-            {
-                log.AppendLine($"[失败] {probeRes.Error}");
-                ToolOutputTextBox.Text = log.ToString();
-                _logger.LogAction("set-region", "fail", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-                return;
-            }
-
-            _config = _configStore.Save(
-                _config with
-                {
-                    ExpectedExitCountry = probeRes.Country,
-                    ExpectedLocale = probeRes.Locale
-                },
-                preserveExistingApiKeyIfEmpty: true);
-            LoadConfigToUi(_config);
-            log.AppendLine($"[通过] 已锁定出口目标：国家={probeRes.Country}，IANA 时区={probeRes.IanaTimezone}（Windows={probeRes.WindowsTimezone}），Locale={probeRes.Locale}（源={probeRes.Source}）");
-
-            // Apply system timezone via privileged helper (preserving original pre-override timezone)
-            var state = _stateStore.Load();
-            TimeZoneInfo.ClearCachedData();
-            var currentTz = TimeZoneInfo.Local.Id;
-            if (!string.Equals(currentTz, probeRes.WindowsTimezone, StringComparison.OrdinalIgnoreCase))
-            {
-                var originalTz = state.TimezoneOverrideActive && !string.IsNullOrWhiteSpace(state.OriginalWindowsTimezone)
-                    ? state.OriginalWindowsTimezone
-                    : currentTz;
-                _stateStore.Save(state with
-                {
-                    TimezoneOverrideActive = true,
-                    OriginalWindowsTimezone = originalTz,
-                    AppliedWindowsTimezone = probeRes.WindowsTimezone,
-                    TimezoneOverrideAt = DateTimeOffset.UtcNow
-                });
-                var tzRes = await SendHelperAsync("apply-timezone", _lastReport, timezoneId: probeRes.WindowsTimezone);
-                if (tzRes.Success)
-                {
-                    _timezoneOperationError = string.Empty;
-                    log.AppendLine($"[通过] 系统时区已切换至 {probeRes.WindowsTimezone}（退出时恢复 {originalTz}）");
-                }
-                else
-                {
-                    _timezoneOperationError = $"系统时区切换失败：{tzRes.Detail}";
-                    if (!state.TimezoneOverrideActive)
-                    {
-                        _stateStore.Save(state);
-                    }
-                    log.AppendLine($"[警告] {_timezoneOperationError}");
-                }
-            }
-            else
-            {
-                log.AppendLine($"[通过] 系统时区已是 {probeRes.WindowsTimezone}");
-            }
-
-            // Apply user locale via Set-Culture
-            var script = $"$ErrorActionPreference='Stop'; Set-Culture '{probeRes.Locale.Replace("'", "''")}'";
-            var localeOk = await Task.Run(() => RunPowerShellUserScript(script, out var err)
-                ? (true, $"当前用户区域格式已设为 {probeRes.Locale}")
-                : (false, $"区域格式同步失败：{err}"));
-            log.AppendLine(localeOk.Item1 ? $"[通过] {localeOk.Item2}" : $"[警告] {localeOk.Item2}");
-
-            ToolOutputTextBox.Text = log.ToString();
-            await RunCheckAsync(true);
-            sw.Stop();
-            log.AppendLine($"地区适配完成（耗时 {sw.ElapsedMilliseconds} ms）。");
-            ToolOutputTextBox.Text = log.ToString();
-            _logger.LogAction("set-region", "ok", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            log.AppendLine($"[失败] 地区适配异常：{ex.Message}");
-            ToolOutputTextBox.Text = log.ToString();
-            _logger.LogAction("set-region", "fail", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private async void OneClickFixButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在执行一键修复环境…"))
-        {
-            return;
-        }
-
-        var sw = Stopwatch.StartNew();
-        var log = new StringBuilder();
-        log.AppendLine($"# 一键修复执行 {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-        try
-        {
-            var report = _lastReport ?? await RunCheckAsync(true);
-
-            // 1. Flush DNS via privileged helper
-            var dnsRes = await SendHelperAsync("flush-dns", null);
-            log.AppendLine(dnsRes.Success
-                ? $"[通过] DNS 缓存刷新：{dnsRes.Detail}"
-                : $"[警告] DNS 缓存刷新失败：{dnsRes.Detail}");
-
-            // 2. Sync timezone if mismatched
-            if (report is not null && !string.IsNullOrWhiteSpace(report.Network.ExitWindowsTimezone))
-            {
-                if (!string.Equals(report.Network.CurrentWindowsTimezone, report.Network.ExitWindowsTimezone, StringComparison.OrdinalIgnoreCase))
-                {
-                    await EnsureExitTimezoneAsync(report);
-                    log.AppendLine(string.IsNullOrEmpty(_timezoneOperationError)
-                        ? $"[通过] 时区同步：已切换至 {report.Network.ExitWindowsTimezone}"
-                        : $"[警告] 时区同步：{_timezoneOperationError}");
-                }
-                else
-                {
-                    log.AppendLine($"[通过] 时区已匹配：{report.Network.CurrentWindowsTimezone}");
-                }
-            }
-
-            // 3. Disable IPv6 binding ONLY on leaking non-VPN adapters
-            var leakingAdapters = report?.Network.PublicIpv6Routes ?? Array.Empty<string>();
-            if (leakingAdapters.Count > 0)
-            {
-                var ipv6Res = await SendHelperAsync("disable-ipv6-adapters", null, adapterNames: leakingAdapters);
-                log.AppendLine(ipv6Res.Success
-                    ? $"[通过] IPv6 旁路治理：{ipv6Res.Detail}"
-                    : $"[警告] IPv6 旁路治理失败：{ipv6Res.Detail}");
-            }
-            else
-            {
-                log.AppendLine("[通过] 非 VPN 网卡未发现公网/NAT64 IPv6 路由，无需修改网卡绑定");
-            }
-
-            // 4. Mode-aware Clash Verge pinned rules repair (with Merge cleanup, reload verification & rollback)
-            if (Directory.Exists(ClashInspector.FindClashVergeDir()))
-            {
-                var ruleFix = await _clashInspector.RepairClashVergeRulesAsync(_config, CancellationToken.None);
-                log.AppendLine(ruleFix.Success
-                    ? $"[通过] Clash 置顶规则：{ruleFix.Message}"
-                    : $"[警告] Clash 置顶规则：{ruleFix.Message}");
-            }
-
-            // 5. Refresh WFP if strict mode enabled and TUN adapter is up
-            if (_config.WfpStrictEnabled && !string.IsNullOrWhiteSpace(report?.Network.AdapterGuid))
-            {
-                var wfpRes = await SendHelperAsync(
-                    "wfp-enable",
-                    report,
-                    adapterGuid: report!.Network.AdapterGuid,
-                    allowLoopback: _config.WfpAllowLoopback);
-                log.AppendLine(wfpRes.Success
-                    ? $"[通过] WFP 规则刷新：{wfpRes.Detail}"
-                    : $"[警告] WFP 规则刷新失败：{wfpRes.Detail}");
-            }
-
-            log.AppendLine("正在执行修复后完整复检…");
-            ToolOutputTextBox.Text = log.ToString();
-            var fresh = await RunCheckAsync(true);
-            sw.Stop();
-            _logger.LogAction("one-click-fix", fresh?.CanRecover == true ? "ok" : "warn", sw.ElapsedMilliseconds, fresh?.Checks, _config.LoggingEnabled);
-            log.AppendLine($"修复流程完成（耗时 {sw.ElapsedMilliseconds} ms）。");
-            ToolOutputTextBox.Text = log.ToString();
-        }
-        catch (Exception ex)
-        {
-            sw.Stop();
-            log.AppendLine($"[失败] 一键修复异常：{ex.Message}");
-            ToolOutputTextBox.Text = log.ToString();
-            _logger.LogAction("one-click-fix", "fail", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private async void SyncLocaleButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在同步当前用户区域格式…"))
-        {
-            return;
-        }
-
-        try
-        {
-            var target = !string.IsNullOrWhiteSpace(_config.ExpectedLocale)
-                ? _config.ExpectedLocale!
-                : !string.IsNullOrWhiteSpace(_lastReport?.Network.ExpectedLocale)
-                    ? _lastReport!.Network.ExpectedLocale
-                    : CountryDefaults.GetExpectedLocale(_config.ExpectedExitCountry ?? _lastReport?.Network.ExitCountry);
-
-            if (string.IsNullOrWhiteSpace(target) ||
-                !Regex.IsMatch(target, "^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$"))
-            {
-                AppendToolOutput("[失败] 无法确定合法的目标地区 Locale，请先在「检查与防护设置」填写或等待出口识别。");
-                return;
-            }
-
-            var script = $"$ErrorActionPreference='Stop'; Set-Culture '{target.Replace("'", "''")}'";
-            var ok = await Task.Run(() => RunPowerShellUserScript(script, out var error)
-                ? (true, $"已同步当前用户系统区域格式为 {target}（部分应用重启后生效）")
-                : (false, $"同步地区 Locale 失败：{error}"));
-
-            AppendToolOutput(ok.Item1 ? $"[通过] {ok.Item2}" : $"[失败] {ok.Item2}");
-            _logger.LogAction("sync-locale", ok.Item1 ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
-            await RunCheckAsync(true);
-        }
-        catch (Exception ex)
-        {
-            AppendToolOutput($"[失败] 同步 Locale 异常：{ex.Message}");
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private async void ClashStatusButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            ToolOutputTextBox.Text = "正在查询 Clash / FlClash 运行模式与内核置顶规则…";
-            var audit = await _clashInspector.InspectAsync(_config, CancellationToken.None);
-            var sb = new StringBuilder();
-            sb.AppendLine($"# Clash 路由规则审计 {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-            sb.AppendLine($"运行模式：{audit.Mode}");
-            sb.AppendLine($"审计结果：{audit.Status}");
-            sb.AppendLine($"WebRTC 策略：{WebRtcPolicies.DisplayName(_config.WebRtcPolicy)}");
-            sb.AppendLine($"详情：{audit.Detail}");
-            if (!string.IsNullOrWhiteSpace(audit.EndpointBaseUrl))
-            {
-                sb.AppendLine($"控制接口：{audit.EndpointBaseUrl}（来源：{audit.EndpointSource}）");
-            }
-
-            if (audit.HeadRules.Count > 0)
-            {
-                sb.AppendLine();
-                sb.AppendLine("前 18 条内核规则：");
-                foreach (var rule in audit.HeadRules)
-                {
-                    sb.AppendLine("  " + rule);
-                }
-            }
-
-            ToolOutputTextBox.Text = sb.ToString();
-        }
-        catch (Exception ex)
-        {
-            ToolOutputTextBox.Text = $"[失败] 查询 Clash 状态失败：{ex.Message}";
-        }
-    }
-
-    private async void WriteClashRulesButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在按运行模式修复 Clash Verge 置顶规则…"))
-        {
-            return;
-        }
-
-        try
-        {
-            ToolOutputTextBox.Text = "正在识别 Clash 运行模式、清理旧 Merge.yaml 并验证内核 /rules…";
-            var result = await _clashInspector.RepairClashVergeRulesAsync(_config, CancellationToken.None);
-
-            var sb = new StringBuilder();
-            sb.AppendLine($"# 修复 Clash Verge 置顶规则 {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
-            sb.AppendLine(result.Success
-                ? $"[通过] {result.Message}"
-                : $"[失败] {result.Message}");
-            ToolOutputTextBox.Text = sb.ToString();
-            _logger.LogAction("write-clash-rules", result.Success ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
-            await RunCheckAsync(true);
-        }
-        catch (Exception ex)
-        {
-            ToolOutputTextBox.Text = $"[失败] 写入 Clash 置顶规则异常：{ex.Message}";
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private async void FingerprintButton_Click(object sender, RoutedEventArgs e)
-    {
-        ToolOutputTextBox.Text = "正在执行只读设备指纹体检…";
-        var report = await Task.Run(FingerprintInspector.RunReport);
-        ToolOutputTextBox.Text = report;
-        _logger.LogAction("fingerprint-check", "ok", 0, enabled: _config.LoggingEnabled);
-    }
-
-    private async void CliInfoButton_Click(object sender, RoutedEventArgs e)
-    {
-        ToolOutputTextBox.Text = "正在执行只读 Claude Code CLI 体检…";
-        var report = await Task.Run(CliInspector.RunReport);
-        ToolOutputTextBox.Text = report;
-        _logger.LogAction("cli-check", "ok", 0, enabled: _config.LoggingEnabled);
-    }
-
-    private void ExportDiagnosticsButton_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.SaveFileDialog
-        {
-            Title = "导出脱敏诊断包",
-            Filter = "ZIP 诊断包 (*.zip)|*.zip",
-            FileName = $"claude-guardian-diagnostics-{DateTime.Now:yyyyMMdd-HHmmss}.zip"
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-
-        try
-        {
-            DiagnosticsExporter.ExportZip(
-                dialog.FileName,
-                _config,
-                _stateStore.Load(),
-                _lastReport,
-                _logger);
-            ToolOutputTextBox.Text = $"[通过] 脱敏诊断包已导出至：{dialog.FileName}\r\n包含：environment.json、recent-status.json、config-redacted.json（已剔除 IP 与 API Key）、guardian.log（严格脱敏）。";
-            _logger.LogAction("export-diagnostics", "ok", 0, enabled: _config.LoggingEnabled);
-        }
-        catch (Exception ex)
-        {
-            ToolOutputTextBox.Text = $"[失败] 导出诊断包失败：{ex.Message}";
-        }
-    }
-
-    private void OpenSafeBrowserButton_Click(object sender, RoutedEventArgs e)
-    {
-        var url = SafeBrowserUrlBox.Text?.Trim() ?? string.Empty;
-        var result = SafeBrowserLauncher.Launch(url, _config, _lastReport?.Network);
-        AppendToolOutput(result.Success ? $"[通过] {result.Message}" : $"[拦截] {result.Message}");
-        _logger.LogAction("safe-browser", result.Success ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
-    }
-
-    private async void LaunchClaudeButton_Click(object sender, RoutedEventArgs e)
-    {
-        await LaunchClaudeSafeAsync();
-    }
-
-    private async Task LaunchClaudeSafeAsync()
-    {
-        if (!TryBeginOperation("正在执行安全启动前环境校验…"))
-        {
-            return;
-        }
-
-        try
-        {
-            var report = _lastReport ?? await RunCheckAsync(true);
-            var gate = ProtectionPolicyEvaluator.EvaluateLaunchGate(report, _blocked, _ignoreWebRtc);
-            if (!gate.Allowed)
-            {
-                ShowFromTray();
-                WpfMessageBox.Show(
-                    $"环境安全门禁已拦截 Claude 启动：\n{gate.Reason}",
-                    "禁止启动 Claude",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                _logger.LogAction("safe-launch", "blocked", 0, report?.Checks, _config.LoggingEnabled);
-                return;
-            }
-
-            var target = ClaudeInstallDiscovery.FindClaudeLaunchTarget();
-            if (string.IsNullOrWhiteSpace(target))
-            {
-                ShowFromTray();
-                WpfMessageBox.Show(
-                    "未找到已安装的 Claude Desktop（传统 EXE 或 MSIX），请先安装 Claude Desktop。",
-                    "未找到 Claude",
-                    MessageBoxButton.OK,
-                    MessageBoxImage.Warning);
-                return;
-            }
-
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = target,
-                UseShellExecute = true
-            });
-            _logger.LogAction("safe-launch", "ok", 0, report?.Checks, _config.LoggingEnabled);
-            LastCheckText.Text = $"已通过安全门禁并启动 Claude（{DateTime.Now:HH:mm:ss}）";
-        }
-        catch (Exception ex)
-        {
-            ShowFromTray();
-            WpfMessageBox.Show($"启动 Claude 失败：{ex.Message}", "启动失败", MessageBoxButton.OK, MessageBoxImage.Warning);
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private void PickProxyConfigButton_Click(object sender, RoutedEventArgs e)
-    {
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = "选择独立代理诊断私有配置文件",
-            Filter = "JSON 配置文件 (*.json)|*.json|所有文件 (*.*)|*.*"
-        };
-        if (dialog.ShowDialog() == true)
-        {
-            ProxyDiagUrlBox.Text = dialog.FileName;
-        }
-    }
-
-    private async void DiagnoseProxyButton_Click(object sender, RoutedEventArgs e)
-    {
-        var input = ProxyDiagUrlBox.Text?.Trim() ?? string.Empty;
-        ToolOutputTextBox.Text = "正在通过指定代理探测 api.anthropic.com 与 claude.ai（不写入客户端日志或账号状态）…";
-        try
-        {
-            var isConfigFile = input.EndsWith(".json", StringComparison.OrdinalIgnoreCase) || File.Exists(input);
-            var report = isConfigFile
-                ? await ProxyDiagnosticsRunner.RunFromSourcesAsync(null, input, null, CancellationToken.None)
-                : await ProxyDiagnosticsRunner.RunAsync(input, CancellationToken.None);
-            ToolOutputTextBox.Text = ProxyDiagnosticsRunner.FormatReportJson(report);
-        }
-        catch (Exception ex)
-        {
-            ToolOutputTextBox.Text = $"[失败] 代理诊断异常：{ex.Message}";
-        }
-    }
-
-    private void ClearToolOutputButton_Click(object sender, RoutedEventArgs e)
-    {
-        ToolOutputTextBox.Clear();
-    }
-
-    private void RefreshAccountsButton_Click(object sender, RoutedEventArgs e)
-    {
-        RefreshAccountUi();
-        AccountActionStatusText.Text = "账号槽位信息已刷新。";
-    }
-
-    private void RefreshAccountUi()
-    {
-        var slots = _accountManager.ListSlots();
-        var current = slots.FirstOrDefault(s => s.IsCurrent)?.Slot;
-        AccountSubText.Text = string.IsNullOrEmpty(current)
-            ? "当前账号槽位：未绑定（首次切换归档至 A）"
-            : $"当前活跃槽位：{current}";
-
-        UpdateSlotCard(slots.First(s => s.Slot == "A"), SlotCardA, SlotStatusA, SlotTimeA);
-        UpdateSlotCard(slots.First(s => s.Slot == "B"), SlotCardB, SlotStatusB, SlotTimeB);
-        UpdateSlotCard(slots.First(s => s.Slot == "C"), SlotCardC, SlotStatusC, SlotTimeC);
-        UpdateSlotCard(slots.First(s => s.Slot == "D"), SlotCardD, SlotStatusD, SlotTimeD);
-    }
-
-    private void UpdateSlotCard(
-        AccountSlotInfo info,
-        System.Windows.Controls.Border card,
-        System.Windows.Controls.TextBlock statusText,
-        System.Windows.Controls.TextBlock timeText)
-    {
-        statusText.Text = info.StatusText;
-        timeText.Text = info.TimestampText;
-        card.BorderBrush = (WpfBrush)FindResource(info.IsCurrent ? "AccentBrush" : "LineBrush");
-        statusText.Foreground = (WpfBrush)FindResource(info.IsCurrent ? "StatusOkBrush" : "TextBrush");
-    }
-
-    private async void SwitchAccountButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (sender is not WpfButton { Tag: string targetSlot })
-        {
-            return;
-        }
-
-        if (_blocked)
-        {
-            AccountActionStatusText.Text = "✕ 当前处于防火墙阻断状态，请先点击底部「检查并解除阻断」确认恢复后再切换账号。";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource("StatusErrorBrush");
-            return;
-        }
-
-        if (!TryBeginOperation($"正在执行切换前安全复检（目标槽位 {targetSlot}）…"))
-        {
-            return;
-        }
-
-        AccountActionStatusText.Text = $"正在执行切换前环境安全复检（目标槽位 {targetSlot}）…";
-        var sw = Stopwatch.StartNew();
-        try
-        {
-            var report = await RunCheckAsync(true);
-            var failures = report is null ? Array.Empty<CheckResult>() : GetEffectiveBlockingFailures(report);
-            var healthy = !_blocked && report is not null && !report.Network.ProxyPathSkipped && failures.Count == 0;
-            var reason = _blocked
-                ? "当前仍处于阻断状态"
-                : report is null
-                    ? "未能获取环境报告"
-                    : report.Network.ProxyPathSkipped
-                        ? "代理或 TUN 路径不可用"
-                        : FormatTripReason(failures);
-
-            var result = await Task.Run(() => _accountManager.SwitchToSlot(targetSlot, healthy, reason, launchAfterSwitch: true));
-            sw.Stop();
-            AccountActionStatusText.Text = result.Success
-                ? $"✓ {result.Message}"
-                : $"✕ {result.Message}";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource(result.Success ? "StatusOkBrush" : "StatusErrorBrush");
-            RefreshAccountUi();
-            UpdateCompactWindow();
-            _logger.LogAction("switch-account", result.Success ? "ok" : "fail", sw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
-        }
-        catch (Exception ex)
-        {
-            AccountActionStatusText.Text = $"✕ 切换异常：{ex.Message}";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource("StatusErrorBrush");
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private void SaveKeepPathsButton_Click(object sender, RoutedEventArgs e)
-    {
-        try
-        {
-            _accountManager.SaveKeepPathsText(KeepPathsTextBox.Text);
-            AccountActionStatusText.Text = $"✓ 已保存跨账号保留路径清单（{_accountManager.KeepFilePath}）";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource("StatusOkBrush");
-        }
-        catch (Exception ex)
-        {
-            AccountActionStatusText.Text = $"✕ 保存保留路径失败：{ex.Message}";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource("StatusErrorBrush");
-        }
-    }
-
-    private async void ExportSnapshotButton_Click(object sender, RoutedEventArgs e)
-    {
-        var slot = (SnapshotSlotCombo.SelectedItem as WpfComboBoxItem)?.Content?.ToString() ?? "A";
-        var password = SnapshotPasswordBox.Password;
-        if (string.IsNullOrEmpty(password) || password.Length < 8)
-        {
-            AccountActionStatusText.Text = "✕ 导出密码至少需要 8 位。";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource("StatusErrorBrush");
-            return;
-        }
-
-        var dialog = new Microsoft.Win32.SaveFileDialog
-        {
-            Title = $"导出账号 {slot} 加密快照",
-            Filter = "Claude 加密快照 (*.csnap)|*.csnap",
-            FileName = $"claude-slot-{slot}-{DateTime.Now:yyyyMMdd}.csnap"
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-
-        if (!TryBeginOperation($"正在加密导出槽位 {slot}…"))
-        {
-            return;
-        }
-
-        AccountActionStatusText.Text = $"正在加密导出槽位 {slot}…";
-        try
-        {
-            var result = await Task.Run(() => _accountManager.ExportEncryptedSnapshot(slot, dialog.FileName, password));
-            AccountActionStatusText.Text = result.Success ? $"✓ {result.Message}" : $"✕ {result.Message}";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource(result.Success ? "StatusOkBrush" : "StatusErrorBrush");
-            _logger.LogAction("export-snapshot", result.Success ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
-        }
-        finally
-        {
-            SnapshotPasswordBox.Clear();
-            EndOperation();
-        }
-    }
-
-    private async void ImportSnapshotButton_Click(object sender, RoutedEventArgs e)
-    {
-        var slot = (SnapshotSlotCombo.SelectedItem as WpfComboBoxItem)?.Content?.ToString() ?? "A";
-        var password = SnapshotPasswordBox.Password;
-        if (string.IsNullOrEmpty(password))
-        {
-            AccountActionStatusText.Text = "✕ 请先输入快照解密密码。";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource("StatusErrorBrush");
-            return;
-        }
-
-        var dialog = new Microsoft.Win32.OpenFileDialog
-        {
-            Title = $"导入加密快照到空槽位 {slot}",
-            Filter = "Claude 加密快照 (*.csnap)|*.csnap"
-        };
-        if (dialog.ShowDialog() != true)
-        {
-            return;
-        }
-
-        if (!TryBeginOperation($"正在校验并解密导入到槽位 {slot}…"))
-        {
-            return;
-        }
-
-        AccountActionStatusText.Text = $"正在校验并解密导入到槽位 {slot}…";
-        try
-        {
-            var result = await Task.Run(() => _accountManager.ImportEncryptedSnapshot(dialog.FileName, slot, password));
-            AccountActionStatusText.Text = result.Success ? $"✓ {result.Message}" : $"✕ {result.Message}";
-            AccountActionStatusText.Foreground = (WpfBrush)FindResource(result.Success ? "StatusOkBrush" : "StatusErrorBrush");
-            RefreshAccountUi();
-            _logger.LogAction("import-snapshot", result.Success ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
-        }
-        finally
-        {
-            SnapshotPasswordBox.Clear();
-            EndOperation();
-        }
-    }
-
-    private void DetectProxyGroupButton_Click(object sender, RoutedEventArgs e)
-    {
-        var detected = ClashInspector.DetectDefaultProxyGroup();
-        ClashProxyGroupBox.Text = detected;
-        SettingsStatusText.Text = $"已识别 Clash 代理组：{detected}（点击「保存设置并重新检查」后生效）";
-        SettingsStatusText.Foreground = (WpfBrush)FindResource("AccentHoverBrush");
-    }
-
-    private async void SaveSettingsButton_Click(object sender, RoutedEventArgs e)
-    {
-        if (!TryBeginOperation("正在保存设置并重新检查…"))
-        {
-            return;
-        }
-
-        try
-        {
-            if (!int.TryParse(LightIntervalBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var lightSec))
-            {
-                throw new ArgumentException("轻量检查间隔必须是整数秒");
-            }
-
-            if (!int.TryParse(FullIntervalBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var fullMin))
-            {
-                throw new ArgumentException("完整检查间隔必须是整数分钟");
-            }
-
-            IpReputationConfig? ipRep = null;
-            var repUrl = IpRepUrlBox.Text.Trim();
-            if (!string.IsNullOrEmpty(repUrl))
-            {
-                if (!double.TryParse(IpRepThresholdBox.Text.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out var threshold))
-                {
-                    throw new ArgumentException("IP 信誉风险分阈值必须是数字（0-100）");
-                }
-
-                if (!int.TryParse(IpRepCacheDaysBox.Text.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var cacheDays))
-                {
-                    throw new ArgumentException("IP 信誉缓存天数必须是整数（1-90）");
-                }
-
-                ipRep = new IpReputationConfig(repUrl, IpRepKeyBox.Password, threshold, cacheDays);
-            }
-
-            var disabledOptional = _optionalCheckBoxes
-                .Where(pair => pair.Value.IsChecked != true)
-                .Select(pair => pair.Key)
-                .ToArray();
-
-            var previousWfpStrict = _config.WfpStrictEnabled;
-            var previousWfpLoopback = _config.WfpAllowLoopback;
-
-            var candidate = _config with
-            {
-                ProxyClientMode = ProxyClientModeCombo.SelectedValue?.ToString() ?? ProxyClientModes.Auto,
-                WebRtcPolicy = WebRtcPolicyCombo.SelectedValue?.ToString() ?? WebRtcPolicies.Proxy,
-                ExpectedExitCountry = ExpectedCountryBox.Text.Trim(),
-                ExpectedExitIp = ExpectedIpBox.Text.Trim(),
-                ExpectedLocale = ExpectedLocaleBox.Text.Trim(),
-                VpnAdapterPattern = VpnPatternBox.Text.Trim(),
-                FlClashController = FlClashControllerBox.Text.Trim(),
-                ClashProxyGroup = ClashProxyGroupBox.Text.Trim(),
-                LightIntervalSeconds = lightSec,
-                FullIntervalMinutes = fullMin,
-                WfpStrictEnabled = WfpStrictCheckBox.IsChecked == true,
-                WfpAllowLoopback = WfpLoopbackCheckBox.IsChecked == true,
-                AllowOptionalFailures = AllowOptionalFailuresCheckBox.IsChecked == true,
-                LoggingEnabled = LoggingEnabledCheckBox.IsChecked == true,
-                DisabledOptionalChecks = disabledOptional,
-                IpReputation = ipRep
-            };
-
-            _config = _configStore.Save(candidate, preserveExistingApiKeyIfEmpty: true);
-            _timer.Interval = TimeSpan.FromSeconds(_config.LightIntervalSeconds);
-            LoadConfigToUi(_config);
-
-            var wfpNotice = string.Empty;
-            if (_config.WfpStrictEnabled &&
-                (!previousWfpStrict || previousWfpLoopback != _config.WfpAllowLoopback) &&
-                !string.IsNullOrWhiteSpace(_lastReport?.Network.AdapterGuid))
-            {
-                var wfpRes = await SendHelperAsync(
-                    "wfp-enable",
-                    _lastReport,
-                    adapterGuid: _lastReport!.Network.AdapterGuid,
-                    allowLoopback: _config.WfpAllowLoopback);
-                wfpNotice = wfpRes.Success ? "；WFP 出站锁已自动应用" : $"；WFP 应用失败（{wfpRes.Detail}）";
-            }
-
-            SettingsStatusText.Text = $"✓ 设置已保存至 config.json{wfpNotice}，正在重新执行完整检查…";
-            SettingsStatusText.Foreground = (WpfBrush)FindResource("StatusOkBrush");
-            _logger.LogAction("save-config", "ok", 0, enabled: _config.LoggingEnabled);
-            await RunCheckAsync(true);
-        }
-        catch (Exception ex)
-        {
-            SettingsStatusText.Text = $"✕ 保存失败：{ex.Message}";
-            SettingsStatusText.Foreground = (WpfBrush)FindResource("StatusErrorBrush");
-        }
-        finally
-        {
-            EndOperation();
-        }
-    }
-
-    private void ResetSettingsButton_Click(object sender, RoutedEventArgs e)
-    {
-        LoadConfigToUi(new GuardianConfig());
-        SettingsStatusText.Text = "已加载默认参数，点击「保存设置并重新检查」后生效。";
-        SettingsStatusText.Foreground = (WpfBrush)FindResource("AccentHoverBrush");
     }
 
     private async Task<GuardianReport?> RunCheckAsync(bool full)
@@ -1370,7 +521,6 @@ public partial class MainWindow : Window
             Render(report);
             await ApplyProtectionDecisionAsync(report, allowClearBlock: false);
 
-            // Auto-sync system timezone on full check (startup & node switch, preserving original pre-override timezone)
             if (full &&
                 _timezoneRecoveryReady &&
                 !report.Network.ProxyPathSkipped &&
@@ -1538,10 +688,24 @@ public partial class MainWindow : Window
 
     private void Render(GuardianReport report)
     {
+        var previousSelectedId = _selectedCheckId;
         _checks.Clear();
+        CheckResult? restoredSelection = null;
         foreach (var check in report.Checks)
         {
             _checks.Add(check);
+            if (!string.IsNullOrEmpty(previousSelectedId) &&
+                string.Equals(check.Id, previousSelectedId, StringComparison.OrdinalIgnoreCase))
+            {
+                restoredSelection = check;
+            }
+        }
+
+        if (restoredSelection is not null)
+        {
+            ChecksList.SelectedItem = restoredSelection;
+            SelectedEvidenceHeaderText.Text = $"选中项：{restoredSelection.Title} ({restoredSelection.Id})";
+            SelectedEvidenceText.Text = UiPresentationState.FormatCheckEvidence(restoredSelection);
         }
 
         var okCount = report.Checks.Count(c => c.Status == CheckStatus.Ok);
@@ -1579,6 +743,7 @@ public partial class MainWindow : Window
                     : "未取得（见检查详情）"
                 : $"{report.Network.ExitIp} / {report.Network.ExitCountry}";
         BtnLaunchClaude.ToolTip = uiDecision.LaunchGateReason;
+
         ExitIpv6Text.Text = report.Network.PublicIpv6Routes is { Count: > 0 }
             ? $"IPv6 风险：{string.Join("、", report.Network.PublicIpv6Routes)}"
             : string.IsNullOrWhiteSpace(report.Network.ExitIpv6)
@@ -1632,7 +797,7 @@ public partial class MainWindow : Window
         ConnectionsText.Text = report.Network.ActiveConnections.Count == 0
             ? "暂无已建立 TCP 连接"
             : string.Join(Environment.NewLine, report.Network.ActiveConnections);
-        LastCheckText.Text = $"最近检查：{report.ObservedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}";
+        LastCheckText.Text = $"最近检查：{report.ObservedAt.ToLocalTime():yyyy-MM-dd HH:mm:ss}（{report.Network.LastCycleDurationMs} ms）";
         UpdateCompactWindow();
 
         if (_blocked)
@@ -1673,9 +838,6 @@ public partial class MainWindow : Window
         var badge = UiPresentationState.ComputeBadge(report, blocked: false, _ignoreWebRtc);
         SetProtectionState(badge.Label, badge.BackgroundResourceKey, badge.ForegroundResourceKey);
     }
-
-    private bool HasEffectiveStatus(GuardianReport report, CheckStatus status) =>
-        ProtectionPolicyEvaluator.HasEffectiveUiStatus(report, status, _ignoreWebRtc);
 
     private static IEnumerable<string> BuildWebRtcLines(GuardianReport report)
     {
@@ -1745,25 +907,18 @@ public partial class MainWindow : Window
             AccountSubText.Text);
     }
 
-    private void AppendToolOutput(string line)
-    {
-        var current = ToolOutputTextBox.Text;
-        ToolOutputTextBox.Text = string.IsNullOrWhiteSpace(current)
-            ? line
-            : current + Environment.NewLine + line;
-        ToolOutputTextBox.ScrollToEnd();
-    }
-
     private async Task<HelperStatusSnapshot?> QueryHelperStatusAsync(
         string adapterGuid,
         bool allowLoopback,
         CancellationToken cancellationToken)
     {
-        var result = await SendHelperAsync(
+        var result = await HelperPipeClient.SendAsync(
             "status",
             null,
             adapterGuid: adapterGuid,
-            allowLoopback: allowLoopback);
+            allowLoopback: allowLoopback,
+            timeoutMs: 4_000,
+            cancellationToken: cancellationToken);
         if (!result.Success)
         {
             return new HelperStatusSnapshot(
@@ -1817,62 +972,13 @@ public partial class MainWindow : Window
 
     private async Task<bool> EnsureHelperAvailableAsync()
     {
-        var status = await SendHelperAsync("status", null);
-        if (status.Success)
+        var (ready, error) = await HelperPipeClient.EnsureStartedAsync();
+        if (!ready)
         {
-            return true;
+            _timezoneOperationError = error;
         }
 
-        var helperPath = FindHelperPath();
-        if (helperPath is null)
-        {
-            _timezoneOperationError = "管理员助手未运行，且未找到可启动的管理员助手程序";
-            return false;
-        }
-
-        try
-        {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = helperPath,
-                UseShellExecute = true,
-                Verb = "runas",
-                WorkingDirectory = Path.GetDirectoryName(helperPath)
-            });
-        }
-        catch (Exception exception)
-        {
-            _timezoneOperationError = $"管理员助手启动失败：{exception.Message}";
-            return false;
-        }
-
-        for (var attempt = 0; attempt < 10; attempt++)
-        {
-            await Task.Delay(300);
-            status = await SendHelperAsync("status", null);
-            if (status.Success)
-            {
-                return true;
-            }
-        }
-
-        _timezoneOperationError = $"管理员助手未响应：{status.Detail}";
-        return false;
-    }
-
-    private static string? FindHelperPath()
-    {
-        var candidates = new[]
-        {
-            Path.Combine(AppContext.BaseDirectory, "helper", "ClaudeDesktopGuardian.Helper.exe"),
-            Path.GetFullPath(Path.Combine(
-                AppContext.BaseDirectory,
-                "..",
-                "helper-win-x64",
-                "ClaudeDesktopGuardian.Helper.exe"))
-        };
-
-        return candidates.FirstOrDefault(File.Exists);
+        return ready;
     }
 
     private async Task EnsureExitTimezoneAsync(GuardianReport report)
@@ -2016,146 +1122,17 @@ public partial class MainWindow : Window
         });
     }
 
-    private static bool RunPowerShellUserScript(string script, out string error)
-    {
-        error = string.Empty;
-        try
-        {
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell.exe",
-                UseShellExecute = false,
-                CreateNoWindow = true,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true
-            };
-            psi.ArgumentList.Add("-NoProfile");
-            psi.ArgumentList.Add("-NonInteractive");
-            psi.ArgumentList.Add("-ExecutionPolicy");
-            psi.ArgumentList.Add("Bypass");
-            psi.ArgumentList.Add("-EncodedCommand");
-            psi.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
-            using var proc = Process.Start(psi);
-            if (proc is null)
-            {
-                error = "无法启动 PowerShell";
-                return false;
-            }
-
-            var stderr = proc.StandardError.ReadToEnd();
-            if (!proc.WaitForExit(10000))
-            {
-                try { proc.Kill(true); } catch { }
-                error = "PowerShell 执行超时";
-                return false;
-            }
-
-            if (proc.ExitCode != 0)
-            {
-                error = string.IsNullOrWhiteSpace(stderr) ? $"退出码 {proc.ExitCode}" : stderr.Trim();
-                return false;
-            }
-
-            return true;
-        }
-        catch (Exception ex)
-        {
-            error = ex.Message;
-            return false;
-        }
-    }
-
-    private static async Task<HelperCallResult> SendHelperAsync(
+    private static Task<HelperCallResult> SendHelperAsync(
         string command,
         GuardianReport? report,
         string? timezoneId = null,
         string? adapterGuid = null,
         bool allowLoopback = false,
-        IReadOnlyList<string>? adapterNames = null)
-    {
-        try
-        {
-            using var pipe = new NamedPipeClientStream(".", "ClaudeDesktopGuardian", PipeDirection.InOut, PipeOptions.Asynchronous);
-            await pipe.ConnectAsync(1500);
-            using var writer = new StreamWriter(
-                pipe,
-                new UTF8Encoding(false),
-                4096,
-                leaveOpen: true)
-            {
-                AutoFlush = true
-            };
-            using var reader = new StreamReader(
-                pipe,
-                Encoding.UTF8,
-                detectEncodingFromByteOrderMarks: true,
-                bufferSize: 4096,
-                leaveOpen: true);
-            var request = new
-            {
-                token = new PipeTokenStore().GetOrCreate(),
-                command,
-                paths = report?.ProtectedProcesses
-                    .Select(process => process.Path)
-                    .Where(path => !string.IsNullOrWhiteSpace(path))
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray() ?? Array.Empty<string>(),
-                processIds = report?.ProtectedProcesses
-                    .Select(process => process.ProcessId)
-                    .ToArray() ?? Array.Empty<int>(),
-                timezoneId,
-                adapterGuid,
-                allowLoopback,
-                adapterNames
-            };
-            await writer.WriteLineAsync(JsonSerializer.Serialize(request));
-            var response = await reader.ReadLineAsync();
-            if (string.IsNullOrWhiteSpace(response))
-            {
-                return new HelperCallResult(false, "管理员助手没有返回结果", null);
-            }
-
-            using var document = JsonDocument.Parse(response);
-            var root = document.RootElement;
-            var success = root.TryGetProperty("ok", out var ok) && ok.GetBoolean();
-            var wfpState = root.TryGetProperty("wfpState", out var wfpProp) ? wfpProp.GetString() : null;
-            var wfpDetail = root.TryGetProperty("wfpDetail", out var wfpDetProp) ? wfpDetProp.GetString() : null;
-            bool? fwApiOk = root.TryGetProperty("firewallApiOk", out var fwOkProp) && fwOkProp.ValueKind is JsonValueKind.True or JsonValueKind.False
-                ? fwOkProp.GetBoolean()
-                : null;
-            int? fwCount = root.TryGetProperty("firewallActiveRuleCount", out var fwCntProp) && fwCntProp.TryGetInt32(out var cnt)
-                ? cnt
-                : null;
-            var fwDetail = root.TryGetProperty("firewallDetail", out var fwDetProp) ? fwDetProp.GetString() : null;
-            var helperDetail = root.TryGetProperty("helperDetail", out var hDetProp) ? hDetProp.GetString() : null;
-            var detail = success
-                ? root.TryGetProperty("detail", out var detProp) && !string.IsNullOrWhiteSpace(detProp.GetString())
-                    ? detProp.GetString()!
-                    : root.TryGetProperty("timezoneId", out var timezone)
-                        ? timezone.GetString() ?? "管理员助手已确认"
-                        : "管理员助手已确认"
-                : root.TryGetProperty("error", out var error)
-                    ? error.GetString() ?? "管理员助手拒绝命令"
-                    : "管理员助手拒绝命令";
-            return new HelperCallResult(success, detail, wfpState, wfpDetail, fwApiOk, fwCount, fwDetail, helperDetail);
-        }
-        catch (Exception exception)
-        {
-            return new HelperCallResult(false, exception.Message, null);
-        }
-    }
+        IReadOnlyList<string>? adapterNames = null) =>
+        HelperPipeClient.SendAsync(command, report, timezoneId, adapterGuid, allowLoopback, adapterNames);
 
     private static string FormatProbeDetail(string detail) =>
         string.IsNullOrWhiteSpace(detail) ? string.Empty : $"（{detail}）";
 
     private sealed record ProxyModeOption(string Key, string Label);
-    private sealed record HelperCallResult(
-        bool Success,
-        string Detail,
-        string? WfpState,
-        string? WfpDetail = null,
-        bool? FirewallApiOk = null,
-        int? FirewallActiveRuleCount = null,
-        string? FirewallDetail = null,
-        string? HelperDetail = null);
 }

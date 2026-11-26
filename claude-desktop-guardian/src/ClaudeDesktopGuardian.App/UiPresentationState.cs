@@ -122,4 +122,35 @@ internal static class UiPresentationState
             : $"TUN {network.TunDirectExitIp}（{network.TunDirectExitCountry}）";
         return $"代理 {primary} | {tunPart}";
     }
+
+    public static string FormatCheckEvidence(CheckResult? check)
+    {
+        if (check is null)
+        {
+            return "点击左侧检查矩阵任意一行，查看完整详情与结构化 Evidence。";
+        }
+
+        var lines = new List<string>
+        {
+            $"检查项：{check.Title} ({check.Id})",
+            $"状态：{check.StatusLabel}（{(check.Blocking ? "阻断项" : "非阻断项")}）",
+            $"详情：{check.Detail}"
+        };
+
+        if (check.Evidence is { Count: > 0 })
+        {
+            lines.Add("结构化 Evidence：");
+            foreach (var kv in check.Evidence.OrderBy(pair => pair.Key, StringComparer.OrdinalIgnoreCase))
+            {
+                var value = string.IsNullOrWhiteSpace(kv.Value) ? "(空)" : kv.Value;
+                lines.Add($"  {kv.Key} = {value}");
+            }
+        }
+        else
+        {
+            lines.Add("结构化 Evidence：无");
+        }
+
+        return string.Join(Environment.NewLine, lines);
+    }
 }

@@ -40,7 +40,7 @@ public sealed class AccountSlotManager
         _stopCliOverride = stopCliOverride;
     }
 
-    private string ClaudeDataDir => _claudeDataDirOverride ?? ClaudeInstallDiscovery.Discover().ActiveDataPath;
+    private string ClaudeDataDir => _claudeDataDirOverride ?? ClaudeInstallDiscovery.Discover(forceRefresh: true).ActiveDataPath;
 
     public string AccountsRoot => Path.Combine(_baseDir, "accounts");
     public string KeepFilePath => Path.Combine(_baseDir, "keep-in-workspace.txt");
@@ -847,17 +847,7 @@ public sealed class AccountSlotManager
             return true;
         }
 
-        var currentSid = System.Security.Principal.WindowsIdentity.GetCurrent().User?.Value ?? string.Empty;
-        IReadOnlyList<ProcessInfo> FindCurrentUserCli() =>
-            ProcessSnapshot.Read()
-                .Where(p =>
-                    (p.Name.Equals("claude", StringComparison.OrdinalIgnoreCase) ||
-                     p.Name.Equals("claude.exe", StringComparison.OrdinalIgnoreCase)) &&
-                    !IsDesktopElectronPath(p.Path) &&
-                    (string.IsNullOrEmpty(p.UserSid) || string.Equals(p.UserSid, currentSid, StringComparison.OrdinalIgnoreCase)))
-                .ToArray();
-
-        var initial = FindCurrentUserCli();
+        var initial = WindowsProcessInspector.FindCurrentUserCliProcesses();
         if (initial.Count == 0)
         {
             return true;
@@ -882,7 +872,7 @@ public sealed class AccountSlotManager
         // Wait up to 10 seconds for CLI to exit gracefully; never force-kill CLI
         for (var i = 0; i < 20; i++)
         {
-            if (FindCurrentUserCli().Count == 0)
+            if (WindowsProcessInspector.FindCurrentUserCliProcesses().Count == 0)
             {
                 return true;
             }
@@ -890,20 +880,7 @@ public sealed class AccountSlotManager
             Thread.Sleep(500);
         }
 
-        return FindCurrentUserCli().Count == 0;
-    }
-
-    private static bool IsDesktopElectronPath(string path)
-    {
-        if (string.IsNullOrWhiteSpace(path))
-        {
-            return false;
-        }
-
-        var normalized = path.Replace('/', '\\');
-        return normalized.Contains("\\AnthropicClaude\\", StringComparison.OrdinalIgnoreCase) ||
-               normalized.Contains("\\Programs\\Claude\\", StringComparison.OrdinalIgnoreCase) ||
-               normalized.Contains("\\WindowsApps\\Claude_", StringComparison.OrdinalIgnoreCase);
+        return WindowsProcessInspector.FindCurrentUserCliProcesses().Count == 0;
     }
 
     private bool StopClaudeGracefully()

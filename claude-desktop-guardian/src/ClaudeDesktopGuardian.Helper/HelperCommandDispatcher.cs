@@ -64,6 +64,7 @@ internal sealed class HelperCommandDispatcher
     public const string RulePrefix = "ClaudeDesktopGuardian.";
 
     private readonly IHelperSystemExecutor _executor;
+    private readonly SemaphoreSlim _mutationLock = new(1, 1);
 
     public HelperCommandDispatcher(IHelperSystemExecutor executor)
     {
@@ -159,6 +160,7 @@ internal sealed class HelperCommandDispatcher
             var sid = string.IsNullOrWhiteSpace(_executor.CurrentUserSid) ? "unknown" : _executor.CurrentUserSid;
             var groupName = RulePrefix + sid.Replace('\\', '_');
 
+            // Read-only commands execute immediately without waiting behind slow mutating commands
             if (request.Command == "status")
             {
                 var wfp = _executor.QueryWfpDetailedSafe(request.AdapterGuid, request.AllowLoopback);
@@ -178,79 +180,8 @@ internal sealed class HelperCommandDispatcher
                 };
             }
 
-            var paths = (request.Paths ?? Array.Empty<string>())
-                .Where(_executor.IsAllowedClaudePath)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-
-            if (request.Command == "apply-block")
-            {
-                var discovered = _executor.DiscoverClaudeExecutablePaths();
-                var allBlockPaths = paths
-                    .Concat(discovered)
-                    .Where(_executor.IsAllowedClaudePath)
-                    .Distinct(StringComparer.OrdinalIgnoreCase)
-                    .ToArray();
-
-                // Idempotent clear before re-adding so repeated triggers never pile up duplicate netsh rules
-                await _executor.ClearFirewallGroupAsync(groupName);
-                foreach (var path in allBlockPaths)
-                {
-                    var ruleName = groupName + "." + HashPath(path);
-                    await _executor.AddFirewallBlockRuleAsync(ruleName, groupName, path);
-                }
-
-                return new { ok = true, command = request.Command, paths = allBlockPaths.Length, group = groupName };
-            }
-
-            if (request.Command == "clear-block")
-            {
-                await _executor.ClearFirewallGroupAsync(groupName);
-                return new { ok = true, command = request.Command, paths = 0, group = groupName };
-            }
-
-            if (request.Command == "terminate-tree")
-            {
-                var requestedIds = (request.ProcessIds ?? Array.Empty<int>()).Distinct().ToHashSet();
-                var ownedClaudeProcesses = _executor.FindCurrentUserClaudeProcesses();
-                var allowedIds = ownedClaudeProcesses
-                    .Where(p =>
-                        requestedIds.Contains(p.ProcessId) &&
-                        (string.IsNullOrEmpty(p.UserSid) || string.Equals(p.UserSid, sid, StringComparison.OrdinalIgnoreCase)))
-                    .Select(p => p.ProcessId)
-                    .Distinct()
-                    .ToArray();
-                var rejectedCount = requestedIds.Count - allowedIds.Length;
-                var (terminated, remaining) = await _executor.TerminateProcessesAsync(allowedIds);
-                return new
-                {
-                    ok = true,
-                    command = request.Command,
-                    terminated,
-                    remaining,
-                    rejected = rejectedCount
-                };
-            }
-
             if (request.Command == "get-timezone")
             {
-                return new
-                {
-                    ok = true,
-                    command = request.Command,
-                    timezoneId = await _executor.ReadTimezoneAsync()
-                };
-            }
-
-            if (request.Command is "apply-timezone" or "restore-timezone")
-            {
-                var timezoneId = request.TimezoneId?.Trim() ?? string.Empty;
-                if (!WindowsTimezoneMapper.IsKnownWindowsId(timezoneId))
-                {
-                    return new { ok = false, error = "未知或不支持的 Windows 时区 ID" };
-                }
-
-                await _executor.SetTimezoneAsync(timezoneId);
                 return new
                 {
                     ok = true,
@@ -272,73 +203,153 @@ internal sealed class HelperCommandDispatcher
                 };
             }
 
-            if (request.Command == "wfp-enable")
+            // Mutating commands are serialized to prevent concurrent firewall/WFP/timezone races
+            await _mutationLock.WaitAsync();
+            try
             {
-                var result = await _executor.EnableWfpAsync(request.AdapterGuid, paths, request.AllowLoopback);
-                if (!result.Success)
-                {
-                    return new { ok = false, error = result.Detail };
-                }
-
-                return new
-                {
-                    ok = true,
-                    command = request.Command,
-                    wfpState = "active",
-                    paths = result.PathCount,
-                    allowLoopback = request.AllowLoopback,
-                    terminatedCount = result.TerminatedCount,
-                    remainingCount = result.RemainingCount,
-                    detail = result.Detail
-                };
-            }
-
-            if (request.Command == "wfp-disable")
-            {
-                _executor.DisableWfp();
-                return new
-                {
-                    ok = true,
-                    command = request.Command,
-                    wfpState = "off",
-                    detail = "WFP 内核出站锁已移除"
-                };
-            }
-
-            if (request.Command == "flush-dns")
-            {
-                await _executor.FlushDnsAsync();
-                return new
-                {
-                    ok = true,
-                    command = request.Command,
-                    detail = "系统 DNS 解析缓存已刷新"
-                };
-            }
-
-            if (request.Command == "disable-ipv6-adapters")
-            {
-                var adapterNames = (request.AdapterNames ?? Array.Empty<string>())
-                    .Select(name => name?.Trim() ?? string.Empty)
-                    .Where(IsSafeAdapterName)
+                var paths = (request.Paths ?? Array.Empty<string>())
+                    .Where(_executor.IsAllowedClaudePath)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray();
-                if (adapterNames.Length == 0)
+
+                if (request.Command == "apply-block")
                 {
-                    return new { ok = false, error = "未提供需要禁用 IPv6 绑定的网卡名称" };
+                    var discovered = _executor.DiscoverClaudeExecutablePaths();
+                    var allBlockPaths = paths
+                        .Concat(discovered)
+                        .Where(_executor.IsAllowedClaudePath)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+
+                    // Idempotent clear before re-adding so repeated triggers never pile up duplicate netsh rules
+                    await _executor.ClearFirewallGroupAsync(groupName);
+                    foreach (var path in allBlockPaths)
+                    {
+                        var ruleName = groupName + "." + HashPath(path);
+                        await _executor.AddFirewallBlockRuleAsync(ruleName, groupName, path);
+                    }
+
+                    return new { ok = true, command = request.Command, paths = allBlockPaths.Length, group = groupName };
                 }
 
-                await _executor.DisableIpv6AdaptersAsync(adapterNames);
-                return new
+                if (request.Command == "clear-block")
                 {
-                    ok = true,
-                    command = request.Command,
-                    disabled = adapterNames.Length,
-                    detail = $"已禁用 {adapterNames.Length} 个非 VPN 网卡的 IPv6 绑定：{string.Join("、", adapterNames)}"
-                };
-            }
+                    await _executor.ClearFirewallGroupAsync(groupName);
+                    return new { ok = true, command = request.Command, paths = 0, group = groupName };
+                }
 
-            return new { ok = false, error = "未知命令" };
+                if (request.Command == "terminate-tree")
+                {
+                    var requestedIds = (request.ProcessIds ?? Array.Empty<int>()).Distinct().ToHashSet();
+                    var ownedClaudeProcesses = _executor.FindCurrentUserClaudeProcesses();
+                    var allowedIds = ownedClaudeProcesses
+                        .Where(p =>
+                            requestedIds.Contains(p.ProcessId) &&
+                            (string.IsNullOrEmpty(p.UserSid) || string.Equals(p.UserSid, sid, StringComparison.OrdinalIgnoreCase)))
+                        .Select(p => p.ProcessId)
+                        .Distinct()
+                        .ToArray();
+                    var rejectedCount = requestedIds.Count - allowedIds.Length;
+                    var (terminated, remaining) = await _executor.TerminateProcessesAsync(allowedIds);
+                    return new
+                    {
+                        ok = true,
+                        command = request.Command,
+                        terminated,
+                        remaining,
+                        rejected = rejectedCount
+                    };
+                }
+
+                if (request.Command is "apply-timezone" or "restore-timezone")
+                {
+                    var timezoneId = request.TimezoneId?.Trim() ?? string.Empty;
+                    if (!WindowsTimezoneMapper.IsKnownWindowsId(timezoneId))
+                    {
+                        return new { ok = false, error = "未知或不支持的 Windows 时区 ID" };
+                    }
+
+                    await _executor.SetTimezoneAsync(timezoneId);
+                    return new
+                    {
+                        ok = true,
+                        command = request.Command,
+                        timezoneId = await _executor.ReadTimezoneAsync()
+                    };
+                }
+
+                if (request.Command == "wfp-enable")
+                {
+                    var result = await _executor.EnableWfpAsync(request.AdapterGuid, paths, request.AllowLoopback);
+                    if (!result.Success)
+                    {
+                        return new { ok = false, error = result.Detail };
+                    }
+
+                    return new
+                    {
+                        ok = true,
+                        command = request.Command,
+                        wfpState = "active",
+                        paths = result.PathCount,
+                        allowLoopback = request.AllowLoopback,
+                        terminatedCount = result.TerminatedCount,
+                        remainingCount = result.RemainingCount,
+                        detail = result.Detail
+                    };
+                }
+
+                if (request.Command == "wfp-disable")
+                {
+                    _executor.DisableWfp();
+                    return new
+                    {
+                        ok = true,
+                        command = request.Command,
+                        wfpState = "off",
+                        detail = "WFP 内核出站锁已移除"
+                    };
+                }
+
+                if (request.Command == "flush-dns")
+                {
+                    await _executor.FlushDnsAsync();
+                    return new
+                    {
+                        ok = true,
+                        command = request.Command,
+                        detail = "系统 DNS 解析缓存已刷新"
+                    };
+                }
+
+                if (request.Command == "disable-ipv6-adapters")
+                {
+                    var adapterNames = (request.AdapterNames ?? Array.Empty<string>())
+                        .Select(name => name?.Trim() ?? string.Empty)
+                        .Where(IsSafeAdapterName)
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .ToArray();
+                    if (adapterNames.Length == 0)
+                    {
+                        return new { ok = false, error = "未提供需要禁用 IPv6 绑定的网卡名称" };
+                    }
+
+                    await _executor.DisableIpv6AdaptersAsync(adapterNames);
+                    return new
+                    {
+                        ok = true,
+                        command = request.Command,
+                        disabled = adapterNames.Length,
+                        detail = $"已禁用 {adapterNames.Length} 个非 VPN 网卡的 IPv6 绑定：{string.Join("、", adapterNames)}"
+                    };
+                }
+
+                return new { ok = false, error = "未知命令" };
+            }
+            finally
+            {
+                _mutationLock.Release();
+            }
         }
         catch (Exception exception)
         {
@@ -378,12 +389,15 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
     public string CurrentUserSid => WindowsIdentity.GetCurrent().User?.Value ?? "unknown";
     public int CurrentProcessId => Environment.ProcessId;
     public string GetExpectedToken() => new PipeTokenStore().GetOrCreate();
-    public IReadOnlyList<string> DiscoverClaudeExecutablePaths() => ClaudeInstallDiscovery.Discover().ExecutablePaths;
+    public IReadOnlyList<string> DiscoverClaudeExecutablePaths() => ClaudeInstallDiscovery.Discover(forceRefresh: true).ExecutablePaths;
     public bool IsAllowedClaudePath(string path) => ClaudeInstallDiscovery.IsAllowedClaudeProgramPath(path);
     public IReadOnlyList<ProcessInfo> FindCurrentUserClaudeProcesses() => new WindowsProcessInspector().FindClaudeProcessTree();
 
-    public async Task<string> ReadTimezoneAsync() =>
-        (await RunProcessAsync("tzutil.exe", "/g")).Trim();
+    public Task<string> ReadTimezoneAsync()
+    {
+        TimeZoneInfo.ClearCachedData();
+        return Task.FromResult(TimeZoneInfo.Local.Id);
+    }
 
     public Task SetTimezoneAsync(string timezoneId) =>
         RunProcessAsync("tzutil.exe", "/s", timezoneId);
@@ -562,7 +576,7 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
             return new HelperWfpEnableResult(false, "无法将 VPN/TUN 网卡 GUID 转换为接口 LUID", 0, 0, 0);
         }
 
-        var install = ClaudeInstallDiscovery.Discover();
+        var install = ClaudeInstallDiscovery.Discover(forceRefresh: true);
         var mergedPaths = install.ExecutablePaths
             .Concat(extraPaths)
             .Where(ClaudeInstallDiscovery.IsAllowedClaudeProgramPath)
@@ -651,7 +665,13 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
     private static string EscapePowerShellString(string value) =>
         value.Replace("'", "''", StringComparison.Ordinal);
 
-    private static async Task<string> RunProcessAsync(string fileName, params string[] arguments)
+    private static Task<string> RunProcessAsync(string fileName, params string[] arguments) =>
+        RunProcessWithTimeoutAsync(fileName, 15_000, arguments);
+
+    internal static async Task<string> RunProcessWithTimeoutAsync(
+        string fileName,
+        int timeoutMs,
+        params string[] arguments)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -674,7 +694,17 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
 
         var outputTask = process.StandardOutput.ReadToEndAsync();
         var errorTask = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
+        using var cts = new CancellationTokenSource(Math.Max(100, timeoutMs));
+        try
+        {
+            await process.WaitForExitAsync(cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            try { process.Kill(entireProcessTree: true); } catch { }
+            throw new TimeoutException($"{fileName} 执行超时（>{timeoutMs} ms），已强制终止子进程");
+        }
+
         var output = await outputTask;
         var error = await errorTask;
         if (process.ExitCode != 0)

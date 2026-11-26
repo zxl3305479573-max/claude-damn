@@ -1473,6 +1473,172 @@ finally
     if (Directory.Exists(cliRoot)) Directory.Delete(cliRoot, true);
 }
 
+// =========================================================================
+// 20. Hot-Path Optimization Tests (MSIX Family Parser + Two-Phase Process Filter)
+// =========================================================================
+Assert(
+    ClaudeInstallDiscovery.TryExtractPackageFamilyName("Claude_6.28899.6.0_x64__pzs8sxrjxfjjc") == "Claude_pzs8sxrjxfjjc",
+    "应精确解析真实 MSIX PackageFullName 为 PackageFamilyName",
+    failures);
+Assert(
+    ClaudeInstallDiscovery.TryExtractPackageFamilyName("invalid-package") is null,
+    "非法 MSIX 包名应返回 null",
+    failures);
+
+var rawEntries = new List<RawProcessEntry>(210);
+for (var pid = 100; pid < 300; pid++)
+{
+    rawEntries.Add(new RawProcessEntry(pid, 4, pid % 2 == 0 ? "svchost.exe" : "chrome.exe"));
+}
+rawEntries.Add(new RawProcessEntry(5000, 100, "Claude.exe"));
+rawEntries.Add(new RawProcessEntry(5001, 5000, "Claude.exe"));
+rawEntries.Add(new RawProcessEntry(5002, 5001, "node.exe"));
+rawEntries.Add(new RawProcessEntry(6000, 100, "Claude.exe")); // another user's SID
+
+var inspectedPids = new List<int>();
+var filteredTree = WindowsProcessInspector.FilterClaudeTree(
+    rawEntries,
+    pid =>
+    {
+        inspectedPids.Add(pid);
+        return pid switch
+        {
+            5000 => (@"C:\Users\Me\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-me"),
+            5001 => (@"C:\Users\Me\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-me"),
+            5002 => (@"C:\Users\Me\AppData\Local\Programs\Claude\resources\node.exe", "S-1-5-21-me"),
+            6000 => (@"C:\Users\Other\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-other"),
+            _ => (@"C:\Windows\System32\svchost.exe", "S-1-5-18")
+        };
+    },
+    "S-1-5-21-me");
+Assert(filteredTree.Select(p => p.ProcessId).OrderBy(id => id).SequenceEqual(new[] { 5000, 5001, 5002 }),
+    "两阶段过滤应准确返回当前用户的 Claude 根与子进程树并排除跨用户进程", failures);
+Assert(inspectedPids.Count == 4 && inspectedPids.All(pid => pid >= 5000),
+    $"两阶段过滤不得对 200 个无关系统进程触发句柄查询（实际查询 {inspectedPids.Count} 次）", failures);
+
+// =========================================================================
+// 21. PipeTokenStore Concurrency, IpReputationService Expiry/LRU & {ip} Diag Host
+// =========================================================================
+var raceTokenPath = Path.Combine(Path.GetTempPath(), "cdg-race-token-" + Guid.NewGuid().ToString("N"));
+try
+{
+    var tokenTasks = Enumerable.Range(0, 8)
+        .Select(_ => Task.Run(() => new PipeTokenStore(raceTokenPath).GetOrCreate()))
+        .ToArray();
+    var tokens = await Task.WhenAll(tokenTasks);
+    Assert(tokens.All(t => t.Length >= 32 && t == tokens[0]),
+        "8 路并发冷启动 PipeTokenStore 必须返回完全一致的认证令牌", failures);
+    var reReadStore = new PipeTokenStore(raceTokenPath);
+    reReadStore.InvalidateCache();
+    Assert(reReadStore.GetOrCreate() == tokens[0], "清除内存缓存后应从磁盘稳定读回同一令牌", failures);
+}
+finally
+{
+    if (File.Exists(raceTokenPath)) File.Delete(raceTokenPath);
+}
+
+var repOptCachePath = Path.Combine(Path.GetTempPath(), "cdg-rep-opt-" + Guid.NewGuid().ToString("N") + ".json");
+var repLruCachePath = Path.Combine(Path.GetTempPath(), "cdg-rep-lru-" + Guid.NewGuid().ToString("N") + ".json");
+var diagTplZipPath = Path.Combine(Path.GetTempPath(), "cdg-diag-tpl-" + Guid.NewGuid().ToString("N") + ".zip");
+try
+{
+    // 21a. Expired cache + failed refresh MUST report error (never silently serve stale cache)
+    var failNetwork = false;
+    var expiryHandler = new MockHttpHandler(_ => failNetwork
+        ? new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        : new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent("""{"fraud_score": 12, "is_proxy": false}""", Encoding.UTF8, "application/json")
+        });
+    using var expiryHttp = new HttpClient(expiryHandler);
+    var expirySvc = new IpReputationService(expiryHttp, repOptCachePath);
+    var tBase = new DateTimeOffset(2026, 11, 20, 0, 0, 0, TimeSpan.Zero);
+    var expiryCfg = new IpReputationConfig("https://rep.expiry.test/ip", "k", 25, CacheDays: 7);
+
+    var (freshRec, freshErr) = await expirySvc.LookupAsync("203.0.113.50", expiryCfg, tBase, CancellationToken.None);
+    Assert(freshRec?.Score == 12 && string.IsNullOrEmpty(freshErr), "首次信誉查询应成功并写入缓存", failures);
+
+    failNetwork = true;
+    var (expiredRec, expiredErr) = await expirySvc.LookupAsync("203.0.113.50", expiryCfg, tBase.AddDays(10), CancellationToken.None);
+    Assert(expiredRec is null && expiredErr.Contains("过期", StringComparison.Ordinal),
+        "过期缓存遇接口失败必须显式回报过期刷新失败，不得静默伪装新鲜结果", failures);
+
+    // 21b. LRU eviction keeps newest IP cached when cache exceeds byte budget
+    var lruHandler = new MockHttpHandler(req => new HttpResponseMessage(HttpStatusCode.OK)
+    {
+        Content = new StringContent("""{"fraud_score": 5, "is_proxy": false}""", Encoding.UTF8, "application/json")
+    });
+    using var lruHttp = new HttpClient(lruHandler);
+    var lruSvc = new IpReputationService(lruHttp, repLruCachePath, maxCacheBytes: 380);
+    var lruCfg = new IpReputationConfig("https://rep.lru.test/ip", "k", 25, CacheDays: 7);
+    _ = await lruSvc.LookupAsync("198.51.100.1", lruCfg, tBase, CancellationToken.None);
+    _ = await lruSvc.LookupAsync("198.51.100.2", lruCfg, tBase.AddMinutes(1), CancellationToken.None);
+    _ = await lruSvc.LookupAsync("198.51.100.3", lruCfg, tBase.AddMinutes(2), CancellationToken.None);
+    var countBeforeRequery = lruHandler.RequestCount;
+    var (newestCached, _) = await lruSvc.LookupAsync("198.51.100.3", lruCfg, tBase.AddMinutes(3), CancellationToken.None);
+    Assert(newestCached?.Score == 5 && lruHandler.RequestCount == countBeforeRequery,
+        "超过字节上限时 LRU 淘汰最旧条目后，最新 IP 仍应命中缓存", failures);
+
+    // 21c. DiagnosticsExporter extracts url_host accurately from {ip} template URL
+    DiagnosticsExporter.ExportZip(
+        diagTplZipPath,
+        new GuardianConfig(IpReputation: new IpReputationConfig("https://rep.template.test/v1/{ip}/score", "KEY-TPL-SECRET", 25, 7)),
+        new GuardianState(false, string.Empty, null, DateTimeOffset.UtcNow),
+        evidenceReport,
+        new GuardianLogger(Path.Combine(Path.GetTempPath(), "cdg-tpl-nolog-" + Guid.NewGuid().ToString("N") + ".log")));
+    using var tplZip = ZipFile.OpenRead(diagTplZipPath);
+    using var tplSr = new StreamReader(tplZip.GetEntry("config-redacted.json")!.Open(), Encoding.UTF8);
+    var tplJson = tplSr.ReadToEnd();
+    Assert(tplJson.Contains("\"url_host\": \"rep.template.test\"", StringComparison.Ordinal) &&
+           !tplJson.Contains("KEY-TPL-SECRET", StringComparison.Ordinal),
+        "诊断包应从含 {ip} 占位符的模板 URL 准确提取 url_host 且不泄漏密钥", failures);
+}
+finally
+{
+    if (File.Exists(repOptCachePath)) File.Delete(repOptCachePath);
+    if (File.Exists(repLruCachePath)) File.Delete(repLruCachePath);
+    if (File.Exists(diagTplZipPath)) File.Delete(diagTplZipPath);
+}
+
+// =========================================================================
+// 22. Helper Concurrent Read-vs-Write Isolation & Subprocess Timeout Protection
+// =========================================================================
+var slowExec = new FakeHelperExecutor { ClearDelayMs = 350 };
+var concurrentDispatcher = new HelperCommandDispatcher(slowExec);
+var slowMutateTask = concurrentDispatcher.HandleLineAsync(
+    JsonSerializer.Serialize(new { token = slowExec.Token, command = "apply-block", paths = Array.Empty<string>() }));
+await Task.Delay(40);
+var swStatus = System.Diagnostics.Stopwatch.StartNew();
+var fastStatusResp = ParseResp(await concurrentDispatcher.HandleLineAsync(
+    JsonSerializer.Serialize(new { token = slowExec.Token, command = "status" })));
+swStatus.Stop();
+var slowMutateResp = ParseResp(await slowMutateTask);
+Assert(fastStatusResp.GetProperty("ok").GetBoolean() && swStatus.ElapsedMilliseconds < 250,
+    $"写命令执行期间只读 status 必须无阻塞快速返回（实际耗时 {swStatus.ElapsedMilliseconds} ms）", failures);
+Assert(slowMutateResp.GetProperty("ok").GetBoolean(), "慢写命令 apply-block 应正常完成", failures);
+
+var timedOutProperly = false;
+try
+{
+    await WindowsHelperSystemExecutor.RunProcessWithTimeoutAsync("powershell.exe", 350, "-NoProfile", "-Command", "Start-Sleep -Seconds 5");
+}
+catch (TimeoutException)
+{
+    timedOutProperly = true;
+}
+Assert(timedOutProperly, "Helper 外部子进程超过超时阈值时必须强制终止并抛出 TimeoutException", failures);
+
+// =========================================================================
+// 23. UiPresentationState Selected Check Evidence Formatting
+// =========================================================================
+var emptyEvText = UiPresentationState.FormatCheckEvidence(null);
+Assert(emptyEvText.Contains("任意一行", StringComparison.Ordinal), "未选中检查项时应显示引导提示", failures);
+var formattedEv = UiPresentationState.FormatCheckEvidence(dualMatchCheck);
+Assert(formattedEv.Contains("egress-ip", StringComparison.Ordinal) &&
+       formattedEv.Contains("system_proxy = true", StringComparison.Ordinal) &&
+       formattedEv.Contains("tun_ip = 203.0.113.10", StringComparison.Ordinal),
+    "选中检查项 Evidence 格式化应完整输出检查 ID 与结构化键值", failures);
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)
@@ -1695,6 +1861,7 @@ sealed class FakeHelperExecutor : IHelperSystemExecutor
     public int WfpRemovedCount { get; private set; }
     public string ClearedAllPrefix { get; private set; } = string.Empty;
     public int SimulatedRemainingAfterWfpKill { get; set; }
+    public int ClearDelayMs { get; set; }
 
     public string GetExpectedToken() => Token;
 
@@ -1726,10 +1893,14 @@ sealed class FakeHelperExecutor : IHelperSystemExecutor
         return new HelperFirewallStatus(true, count, $"mock group {groupName} rules={count}");
     }
 
-    public Task ClearFirewallGroupAsync(string groupName)
+    public async Task ClearFirewallGroupAsync(string groupName)
     {
+        if (ClearDelayMs > 0)
+        {
+            await Task.Delay(ClearDelayMs);
+        }
+
         ActiveFirewallRules.RemoveAll(r => string.Equals(r.Group, groupName, StringComparison.OrdinalIgnoreCase));
-        return Task.CompletedTask;
     }
 
     public Task ClearAllGuardianFirewallRulesAsync(string rulePrefix)

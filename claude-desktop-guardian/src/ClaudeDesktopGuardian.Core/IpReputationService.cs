@@ -8,17 +8,22 @@ namespace ClaudeDesktopGuardian.Core;
 
 public sealed class IpReputationService
 {
-    private const int MaxCacheBytes = 262144;
+    public const int DefaultMaxCacheBytes = 262144;
     private readonly HttpClient _httpClient;
     private readonly string _cachePath;
+    private readonly int _maxCacheBytes;
 
-    public IpReputationService(HttpClient httpClient, string? cachePath = null)
+    public IpReputationService(
+        HttpClient httpClient,
+        string? cachePath = null,
+        int maxCacheBytes = DefaultMaxCacheBytes)
     {
         _httpClient = httpClient;
         _cachePath = cachePath ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
             "ClaudeDesktopGuardian",
             "ip-reputation.json");
+        _maxCacheBytes = Math.Max(256, maxCacheBytes);
     }
 
     public async Task<(IpReputationRecord? Record, string Error)> LookupAsync(
@@ -55,7 +60,7 @@ public sealed class IpReputationService
         {
             if (cached is not null)
             {
-                return (cached, string.Empty);
+                return (null, "信誉缓存已过期且本次数据源刷新失败");
             }
 
             return (null, "信誉数据源探测失败或未返回可用数据");
@@ -299,7 +304,7 @@ public sealed class IpReputationService
             }
 
             var raw = File.ReadAllText(_cachePath, Encoding.UTF8);
-            if (raw.Length > MaxCacheBytes)
+            if (raw.Length > _maxCacheBytes)
             {
                 return new Dictionary<string, IpReputationRecord>(StringComparer.Ordinal);
             }
@@ -317,8 +322,19 @@ public sealed class IpReputationService
     {
         try
         {
+            // LRU eviction by CheckedAt when cache exceeds byte budget so updates never stall permanently
             var json = JsonSerializer.Serialize(cache);
-            if (json.Length > MaxCacheBytes)
+            while (Encoding.UTF8.GetByteCount(json) > _maxCacheBytes && cache.Count > 1)
+            {
+                var oldestKey = cache
+                    .OrderBy(kv => kv.Value.CheckedAt)
+                    .Select(kv => kv.Key)
+                    .First();
+                cache.Remove(oldestKey);
+                json = JsonSerializer.Serialize(cache);
+            }
+
+            if (Encoding.UTF8.GetByteCount(json) > _maxCacheBytes)
             {
                 return;
             }

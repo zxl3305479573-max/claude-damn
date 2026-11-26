@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -18,8 +19,34 @@ public sealed record ClaudeInstallation(
 
 public static class ClaudeInstallDiscovery
 {
-    public static ClaudeInstallation Discover()
+    private static readonly object DiscoveryCacheLock = new();
+    private static readonly TimeSpan DiscoveryCacheTtl = TimeSpan.FromSeconds(60);
+    private static ClaudeInstallation? _cachedInstallation;
+    private static DateTimeOffset _cachedAtUtc = DateTimeOffset.MinValue;
+
+    internal static void ClearDiscoveryCache()
     {
+        lock (DiscoveryCacheLock)
+        {
+            _cachedInstallation = null;
+            _cachedAtUtc = DateTimeOffset.MinValue;
+        }
+    }
+
+    public static ClaudeInstallation Discover(bool forceRefresh = false)
+    {
+        if (!forceRefresh)
+        {
+            lock (DiscoveryCacheLock)
+            {
+                if (_cachedInstallation is not null &&
+                    DateTimeOffset.UtcNow - _cachedAtUtc < DiscoveryCacheTtl)
+                {
+                    return _cachedInstallation;
+                }
+            }
+        }
+
         var roots = new List<string>();
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
         var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
@@ -65,13 +92,21 @@ public static class ClaudeInstallDiscovery
                 ? msixDataPath
                 : legacyDataPath;
 
-        return new ClaudeInstallation(
+        var discovered = new ClaudeInstallation(
             packageFamilyName,
             packageFullName,
             packageInstallLocation,
             executables.OrderBy(path => path, StringComparer.OrdinalIgnoreCase).ToArray(),
             activeDataPath,
             msixDataPath);
+
+        lock (DiscoveryCacheLock)
+        {
+            _cachedInstallation = discovered;
+            _cachedAtUtc = DateTimeOffset.UtcNow;
+        }
+
+        return discovered;
     }
 
     public static string? FindMsixDataPath(string? localAppData = null, string? packageFamilyName = null)
@@ -164,6 +199,28 @@ public static class ClaudeInstallDiscovery
         }
     }
 
+    public static string? TryExtractPackageFamilyName(string? packageFullName)
+    {
+        if (string.IsNullOrWhiteSpace(packageFullName))
+        {
+            return null;
+        }
+
+        var parts = packageFullName.Trim().Split('_');
+        if (parts.Length < 5 || string.IsNullOrWhiteSpace(parts[0]))
+        {
+            return null;
+        }
+
+        var publisherId = parts[^1];
+        if (publisherId.Length < 8 || !publisherId.All(char.IsLetterOrDigit))
+        {
+            return null;
+        }
+
+        return $"{parts[0]}_{publisherId}";
+    }
+
     private static (string FamilyName, string FullName, string InstallLocation) TryFindMsixPackage()
     {
         if (!OperatingSystem.IsWindows())
@@ -171,6 +228,13 @@ public static class ClaudeInstallDiscovery
             return (string.Empty, string.Empty, string.Empty);
         }
 
+        var fromRegistry = TryFindMsixPackageFromRegistry();
+        if (!string.IsNullOrWhiteSpace(fromRegistry.FamilyName))
+        {
+            return fromRegistry;
+        }
+
+        // Only fall back to PowerShell if Registry did not contain a valid Claude MSIX entry
         try
         {
             const string script =
@@ -213,6 +277,48 @@ public static class ClaudeInstallDiscovery
             if (parts.Length >= 3)
             {
                 return (parts[0].Trim(), parts[1].Trim(), parts[2].Trim());
+            }
+        }
+        catch
+        {
+        }
+
+        return (string.Empty, string.Empty, string.Empty);
+    }
+
+    private static (string FamilyName, string FullName, string InstallLocation) TryFindMsixPackageFromRegistry()
+    {
+        try
+        {
+            const string packagesSubKey = @"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages";
+            using var root = Registry.CurrentUser.OpenSubKey(packagesSubKey, writable: false);
+            if (root is null)
+            {
+                return (string.Empty, string.Empty, string.Empty);
+            }
+
+            var names = root.GetSubKeyNames();
+            var candidates = names
+                .Where(n => n.StartsWith("Claude_", StringComparison.OrdinalIgnoreCase))
+                .Concat(names.Where(n =>
+                    !n.StartsWith("Claude_", StringComparison.OrdinalIgnoreCase) &&
+                    n.Contains("Claude", StringComparison.OrdinalIgnoreCase)))
+                .ToArray();
+
+            foreach (var fullName in candidates)
+            {
+                using var pkgKey = root.OpenSubKey(fullName, writable: false);
+                var installLocation = pkgKey?.GetValue("PackageRootFolder") as string;
+                if (string.IsNullOrWhiteSpace(installLocation) || !Directory.Exists(installLocation))
+                {
+                    continue;
+                }
+
+                var familyName = TryExtractPackageFamilyName(fullName);
+                if (!string.IsNullOrWhiteSpace(familyName))
+                {
+                    return (familyName, fullName, installLocation.Trim());
+                }
             }
         }
         catch

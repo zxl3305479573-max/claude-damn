@@ -612,7 +612,7 @@ public static class DiagnosticsExporter
                     ? null
                     : new
                     {
-                        url_host = Uri.TryCreate(config.IpReputation.Url, UriKind.Absolute, out var uri) ? uri.Host : "",
+                        url_host = ExtractSafeHost(config.IpReputation.Url),
                         key_configured = !string.IsNullOrEmpty(config.IpReputation.Key),
                         threshold = config.IpReputation.Threshold,
                         cache_days = config.IpReputation.CacheDays
@@ -640,5 +640,16 @@ public static class DiagnosticsExporter
         {
             try { Directory.Delete(stageDir, recursive: true); } catch { }
         }
+    }
+
+    private static string ExtractSafeHost(string? templateUrl)
+    {
+        if (string.IsNullOrWhiteSpace(templateUrl))
+        {
+            return string.Empty;
+        }
+
+        var normalized = Regex.Replace(templateUrl.Trim(), @"\{\{?ip\}?\}", "198.51.100.1", RegexOptions.IgnoreCase);
+        return Uri.TryCreate(normalized, UriKind.Absolute, out var uri) ? uri.Host : string.Empty;
     }
 }

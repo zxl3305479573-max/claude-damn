@@ -53,8 +53,23 @@ if ($runningProcesses) {
     throw "请先退出 Guardian 后再构建，当前占用发布文件的进程：$names"
 }
 
-if (Test-Path -LiteralPath $publish) {
-    Remove-Item -LiteralPath $publish -Recurse -Force
+foreach ($dir in @($publish, (Join-Path $root 'publish\helper-win-x64'), (Join-Path $root 'publish\cli-win-x64'))) {
+    if (Test-Path -LiteralPath $dir) {
+        Remove-Item -LiteralPath $dir -Recurse -Force
+    }
+}
+
+# Shared-runtime single-directory publish: Helper + Cli + App share one self-contained .NET 8 runtime
+dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.Helper\ClaudeDesktopGuardian.Helper.csproj') `
+    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $publish
+if ($LASTEXITCODE -ne 0) {
+    throw "管理员助手发布失败，退出码 $LASTEXITCODE"
+}
+
+dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.Cli\ClaudeDesktopGuardian.Cli.csproj') `
+    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $publish
+if ($LASTEXITCODE -ne 0) {
+    throw "命令行工具发布失败，退出码 $LASTEXITCODE"
 }
 
 dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.App\ClaudeDesktopGuardian.App.csproj') `
@@ -63,23 +78,25 @@ if ($LASTEXITCODE -ne 0) {
     throw "界面发布失败，退出码 $LASTEXITCODE"
 }
 
-dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.Helper\ClaudeDesktopGuardian.Helper.csproj') `
-    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
-    -o (Join-Path $root 'publish\helper-win-x64')
-if ($LASTEXITCODE -ne 0) {
-    throw "管理员助手发布失败，退出码 $LASTEXITCODE"
+foreach ($rel in @(
+    'ClaudeDesktopGuardian.App.exe',
+    'ClaudeDesktopGuardian.Helper.exe',
+    'ClaudeDesktopGuardian.Cli.exe',
+    'Microsoft.Web.WebView2.Wpf.dll',
+    'Microsoft.Web.WebView2.Core.dll',
+    'WebView2Loader.dll',
+    'web\webrtc\index.html',
+    'web\webrtc\leak-check.js')) {
+    $full = Join-Path $publish $rel
+    if (-not (Test-Path -LiteralPath $full)) {
+        throw "发布目录缺少必需文件：$rel"
+    }
 }
 
-$cliPublish = Join-Path $root 'publish\cli-win-x64'
-if (Test-Path -LiteralPath $cliPublish) {
-    Remove-Item -LiteralPath $cliPublish -Recurse -Force
+$totalBytes = (Get-ChildItem -LiteralPath $publish -Recurse -File | Measure-Object -Property Length -Sum).Sum
+$totalMb = [math]::Round($totalBytes / 1MB, 1)
+if ($totalMb -ge 195) {
+    throw "共享运行时发布目录体积异常偏大：$totalMb MB（预期 < 195 MB）"
 }
-dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.Cli\ClaudeDesktopGuardian.Cli.csproj') `
-    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
-    -o $cliPublish
-if ($LASTEXITCODE -ne 0) {
-    throw "命令行工具发布失败，退出码 $LASTEXITCODE"
-}
-Copy-Item -LiteralPath (Join-Path $cliPublish 'ClaudeDesktopGuardian.Cli.exe') -Destination (Join-Path $publish 'ClaudeDesktopGuardian.Cli.exe') -Force
 
-Write-Host "构建完成：$publish" -ForegroundColor Green
+Write-Host "构建完成：$publish（共享单目录运行时，总体积 $totalMb MB）" -ForegroundColor Green

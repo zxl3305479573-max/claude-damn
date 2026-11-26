@@ -9,6 +9,7 @@ namespace ClaudeDesktopGuardian.Helper;
 internal static class Program
 {
     private const string PipeName = "ClaudeDesktopGuardian";
+    private const int MaxPipeInstances = 4;
 
     public static async Task<int> Main(string[] args)
     {
@@ -29,12 +30,43 @@ internal static class Program
             return await dispatcher.RunCleanupAllAsync(statePath);
         }
 
+        // Accept multiple concurrent pipe connections so read-only status polls never stall behind slow mutations
         while (true)
+        {
+            NamedPipeServerStream? pipe = null;
+            try
+            {
+                pipe = CreatePipe();
+                await pipe.WaitForConnectionAsync();
+                var acceptedPipe = pipe;
+                pipe = null;
+                _ = Task.Run(() => HandleClientAsync(acceptedPipe, dispatcher));
+            }
+            catch (IOException)
+            {
+                pipe?.Dispose();
+            }
+            catch (ObjectDisposedException)
+            {
+                pipe?.Dispose();
+            }
+            catch
+            {
+                pipe?.Dispose();
+                await Task.Delay(100);
+            }
+        }
+    }
+
+    private static async Task HandleClientAsync(
+        NamedPipeServerStream pipe,
+        HelperCommandDispatcher dispatcher)
+    {
+        using (pipe)
         {
             try
             {
-                using var pipe = CreatePipe();
-                await pipe.WaitForConnectionAsync();
+                using var ioTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(20));
                 using var reader = new StreamReader(
                     pipe,
                     Encoding.UTF8,
@@ -49,16 +81,20 @@ internal static class Program
                 {
                     AutoFlush = true
                 };
-                var line = await reader.ReadLineAsync();
+
+                var line = await reader.ReadLineAsync(ioTimeout.Token);
                 if (line is null)
                 {
-                    continue;
+                    return;
                 }
 
                 var response = await dispatcher.HandleLineAsync(line);
-                await writer.WriteLineAsync(JsonSerializer.Serialize(response));
+                await writer.WriteLineAsync(JsonSerializer.Serialize(response).AsMemory(), ioTimeout.Token);
             }
             catch (IOException)
+            {
+            }
+            catch (OperationCanceledException)
             {
             }
             catch (ObjectDisposedException)
@@ -82,7 +118,7 @@ internal static class Program
         return NamedPipeServerStreamAcl.Create(
             PipeName,
             PipeDirection.InOut,
-            1,
+            MaxPipeInstances,
             PipeTransmissionMode.Byte,
             PipeOptions.Asynchronous,
             0,

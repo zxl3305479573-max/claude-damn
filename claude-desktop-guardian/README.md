@@ -59,14 +59,16 @@ node --check src\ClaudeDesktopGuardian.App\web\webrtc\leak-check.js
 
 ## 安装与卸载
 
-正式运行需要系统安装 Microsoft Edge WebView2 Runtime。使用管理员 PowerShell 安装或卸载：
+正式运行需要系统安装 Microsoft Edge WebView2 Runtime。`build.ps1` 会将 `App.exe`、`Helper.exe` 与 `Cli.exe` 发布到同一 `publish\win-x64` 目录共享单份 .NET 8 运行时（总体积约 164 MB）。使用管理员 PowerShell 安装或卸载：
 
 ```powershell
-# 安装并注册开机启动任务（无 72 小时超时限制）
+# 默认安装到 C:\Program Files\ClaudeDesktopGuardian（支持 -InstallDir 自定义磁盘路径）
 .\install.ps1
+.\install.ps1 -InstallDir D:\ClaudeDesktopGuardian
 
 # 卸载（先通过 Helper --cleanup-all 清理 WFP、防火墙规则并恢复临时时区，保留用户账号存档）
 .\install.ps1 -Uninstall
+.\install.ps1 -Uninstall -InstallDir D:\ClaudeDesktopGuardian
 ```
 
 开发阶段可以先启动管理员助手，再启动 WPF 主程序：
