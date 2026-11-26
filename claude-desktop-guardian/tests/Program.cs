@@ -1639,6 +1639,92 @@ Assert(formattedEv.Contains("egress-ip", StringComparison.Ordinal) &&
        formattedEv.Contains("tun_ip = 203.0.113.10", StringComparison.Ordinal),
     "选中检查项 Evidence 格式化应完整输出检查 ID 与结构化键值", failures);
 
+// =========================================================================
+// 24. Clash Verge 2.x Named-Pipe HTTP (Chunked), TUN Mismatch Diag & STUN Dedup
+// =========================================================================
+Assert(
+    ClashInspector.NormalizePipeName(@"\\.\pipe\verge-mihomo-production-abc123") == "verge-mihomo-production-abc123" &&
+    ClashInspector.NormalizePipeName(@"..\evil") is null,
+    "Clash 管道名解析应剥离 \\\\.\\pipe\\ 前缀并拒绝非法路径字符",
+    failures);
+
+var mismatchDiag = ClashInspector.FormatClashVergeTunDiagnostic(
+    uiTunEnabled: true, liveTunEnabled: false, fileSource: null, fileTunEnabled: null);
+Assert(mismatchDiag.Contains("已打开 TUN 开关", StringComparison.Ordinal) &&
+       mismatchDiag.Contains("System/Mixed", StringComparison.Ordinal),
+    "UI 已开 TUN 但运行内核 tun.enable=false 时应给出切堆栈与重启内核指引", failures);
+
+var missingAdapterDiag = ClashInspector.FormatClashVergeTunDiagnostic(
+    uiTunEnabled: true, liveTunEnabled: true, fileSource: null, fileTunEnabled: null);
+Assert(missingAdapterDiag.Contains("未出现在线 TUN 网卡", StringComparison.Ordinal),
+    "内核已开 TUN 但缺少网卡时应提示检查服务模式/Wintun", failures);
+
+Assert(
+    WindowsEnvironmentProbe.DeduplicateStunDetails(new[] { "IPv4 STUN 超时", "IPv4 STUN 超时", "IPv4 STUN 超时" }) == "IPv4 STUN 超时",
+    "STUN 多 IP 同类超时明细应自动去重",
+    failures);
+
+var mockPipeName = "cdg-test-mihomo-" + Guid.NewGuid().ToString("N");
+using (var pipeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
+{
+    var rulesJson = JsonSerializer.Serialize(new
+    {
+        rules = ClashInspector.PinnedDomains
+            .Select(d => new { type = "DomainSuffix", payload = d, proxy = "US-Node" })
+            .Concat(ClashInspector.PinnedPorts.Select(p => new { type = "AND", payload = $"((NETWORK,UDP),(DST-PORT,{p}))", proxy = "US-Node" }))
+            .ToArray()
+    });
+    var rulesBytes = Encoding.UTF8.GetBytes(rulesJson);
+    var half = rulesBytes.Length / 2;
+    var chunk1 = Encoding.UTF8.GetString(rulesBytes, 0, half);
+    var chunk2 = Encoding.UTF8.GetString(rulesBytes, half, rulesBytes.Length - half);
+
+    var serverTask = Task.Run(async () =>
+    {
+        for (var reqNo = 0; reqNo < 2; reqNo++)
+        {
+            await using var srv = new System.IO.Pipes.NamedPipeServerStream(
+                mockPipeName,
+                System.IO.Pipes.PipeDirection.InOut,
+                2,
+                System.IO.Pipes.PipeTransmissionMode.Byte,
+                System.IO.Pipes.PipeOptions.Asynchronous);
+            await srv.WaitForConnectionAsync(pipeCts.Token);
+            using var reader = new StreamReader(srv, Encoding.ASCII, leaveOpen: true);
+            var reqLine = await reader.ReadLineAsync(pipeCts.Token) ?? string.Empty;
+            while (!string.IsNullOrEmpty(await reader.ReadLineAsync(pipeCts.Token))) { }
+
+            string httpResp;
+            if (reqLine.StartsWith("GET /configs ", StringComparison.Ordinal))
+            {
+                const string cfgBody = """{"mode":"rule","tun":{"enable":true,"device":"Mihomo"}}""";
+                httpResp = $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(cfgBody)}\r\nConnection: close\r\n\r\n{cfgBody}";
+            }
+            else
+            {
+                var c1Len = Encoding.UTF8.GetByteCount(chunk1).ToString("x");
+                var c2Len = Encoding.UTF8.GetByteCount(chunk2).ToString("x");
+                httpResp = $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{c1Len}\r\n{chunk1}\r\n{c2Len}\r\n{chunk2}\r\n0\r\n\r\n";
+            }
+
+            var respBytes = Encoding.UTF8.GetBytes(httpResp);
+            await srv.WriteAsync(respBytes, pipeCts.Token);
+            await srv.FlushAsync(pipeCts.Token);
+            srv.Disconnect();
+        }
+    }, pipeCts.Token);
+
+    var pipeEp = new ClashEndpoint(@"\\.\pipe\" + mockPipeName, string.Empty, "clash-verge-pipe", mockPipeName);
+    var pipeMode = await ClashInspector.DetectClashModeAsync(pipeEp, isFlClash: false, pipeCts.Token);
+    Assert(pipeMode == "rule", $"Clash 命名管道 /configs 应准确解析模式 rule（实际 {pipeMode}）", failures);
+
+    var (pipeRulesOk, pipeRulesReason, pipeRules) = await ClashInspector.FetchRulesAsync(pipeEp, pipeCts.Token);
+    Assert(pipeRulesOk && ClashInspector.ArePinnedRulesLoaded(pipeRules, WebRtcPolicies.Proxy),
+        $"Clash 命名管道 /rules 应正确解码 chunked 响应并验过 16 条置顶规则（ok={pipeRulesOk}, reason={pipeRulesReason}, count={pipeRules.Count}）",
+        failures);
+    await serverTask;
+}
+
 if (failures.Count > 0)
 {
     foreach (var failure in failures)

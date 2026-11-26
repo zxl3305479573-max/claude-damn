@@ -1616,19 +1616,17 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
                     $"未取得 {FormatAddressFamily(addressFamily)} 地址");
             }
 
-            var details = new List<string>();
-            foreach (var address in addresses)
+            var targetAddresses = addresses.Take(4).ToArray();
+            var probeResults = await Task.WhenAll(
+                targetAddresses.Select(address => ProbeStunAddressAsync(host, port, address, addressFamily, cancellationToken)));
+            var okResult = probeResults.FirstOrDefault(r => r.Status == "ok");
+            if (okResult is not null)
             {
-                var result = await ProbeStunAddressAsync(host, port, address, addressFamily, cancellationToken);
-                if (result.Status == "ok")
-                {
-                    return result;
-                }
-
-                details.Add(result.Detail);
+                return okResult;
             }
 
-            return new StunResult(host, port, "unknown", string.Empty, string.Join("；", details));
+            var details = DeduplicateStunDetails(probeResults.Select(r => r.Detail));
+            return new StunResult(host, port, "unknown", string.Empty, details);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -1741,6 +1739,16 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
 
     private static string FormatAddressFamily(AddressFamily addressFamily) =>
         addressFamily == AddressFamily.InterNetworkV6 ? "IPv6" : "IPv4";
+
+    internal static string DeduplicateStunDetails(IEnumerable<string> rawDetails)
+    {
+        var distinct = rawDetails
+            .Where(d => !string.IsNullOrWhiteSpace(d))
+            .Select(d => d.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return distinct.Length == 0 ? "STUN 超时" : string.Join("；", distinct);
+    }
 
     private static IReadOnlyList<string> CaptureConnections(IReadOnlyList<ProcessInfo> processes)
     {

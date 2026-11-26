@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.IO.Pipes;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -9,7 +10,10 @@ using System.Text.RegularExpressions;
 
 namespace ClaudeDesktopGuardian.Core;
 
-public sealed record ClashEndpoint(string BaseUrl, string Secret, string Source);
+public sealed record ClashEndpoint(string BaseUrl, string Secret, string Source, string? PipeName = null)
+{
+    public bool IsNamedPipe => !string.IsNullOrWhiteSpace(PipeName);
+}
 
 public sealed record ClashAuditResult(
     string Mode,
@@ -95,45 +99,150 @@ public sealed class ClashInspector
         }
 
         var dir = FindClashVergeDir();
-        foreach (var name in new[] { "config.yaml", "clash-verge.yaml" })
+        var uiTunEnabled = string.Equals(
+            ReadYamlScalar(Path.Combine(dir, "verge.yaml"), "enable_tun_mode"),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        var liveTunEnabled = TryQueryLiveClashVergeTunEnabled(dir);
+        if (liveTunEnabled.HasValue)
         {
-            var path = Path.Combine(dir, name);
-            if (!File.Exists(path))
-            {
-                continue;
-            }
+            return FormatClashVergeTunDiagnostic(uiTunEnabled, liveTunEnabled, fileSource: null, fileTunEnabled: null);
+        }
 
-            try
+        foreach (var name in new[] { "clash-verge.yaml", "config.yaml" })
+        {
+            var fileTun = ReadYamlTunEnabled(Path.Combine(dir, name));
+            if (fileTun.HasValue)
             {
-                var inTun = false;
-                foreach (var line in File.ReadLines(path, Encoding.UTF8))
+                var diag = FormatClashVergeTunDiagnostic(uiTunEnabled, liveTunEnabled: null, fileSource: name, fileTunEnabled: fileTun);
+                if (!string.IsNullOrEmpty(diag))
                 {
-                    if (Regex.IsMatch(line, @"^tun:\s*$"))
-                    {
-                        inTun = true;
-                        continue;
-                    }
-
-                    if (inTun && Regex.IsMatch(line, @"^\S"))
-                    {
-                        break;
-                    }
-
-                    var match = Regex.Match(line, @"^\s+enable:\s*(true|false)\s*$");
-                    if (inTun && match.Success)
-                    {
-                        return match.Groups[1].Value.Equals("false", StringComparison.OrdinalIgnoreCase)
-                            ? $"Clash Verge 运行配置 {name} 的 tun.enable=false"
-                            : string.Empty;
-                    }
+                    return diag;
                 }
-            }
-            catch
-            {
             }
         }
 
-        return string.Empty;
+        return FormatClashVergeTunDiagnostic(uiTunEnabled, liveTunEnabled: null, fileSource: null, fileTunEnabled: null);
+    }
+
+    internal static string FormatClashVergeTunDiagnostic(
+        bool uiTunEnabled,
+        bool? liveTunEnabled,
+        string? fileSource,
+        bool? fileTunEnabled)
+    {
+        if (liveTunEnabled == false)
+        {
+            return uiTunEnabled
+                ? "Clash Verge 已打开 TUN 开关，但运行中的 verge-mihomo 内核实际 tun.enable=false（请将 TUN 堆栈改为 System/Mixed 并重启内核或检查服务模式）"
+                : "Clash Verge 运行中的 verge-mihomo 内核当前 tun.enable=false（请在 Clash Verge 中开启 TUN 模式）";
+        }
+
+        if (liveTunEnabled == true)
+        {
+            return "Clash Verge 运行内核已开启 TUN，但系统未出现在线 TUN 网卡（请检查服务模式/Wintun 驱动或将 TUN 堆栈改为 System）";
+        }
+
+        if (fileTunEnabled == false && !string.IsNullOrWhiteSpace(fileSource))
+        {
+            return uiTunEnabled
+                ? $"Clash Verge 界面已开启 TUN，但 {fileSource} 仍为 tun.enable=false（请切 TUN 堆栈为 System/Mixed 并重启内核）"
+                : $"Clash Verge 运行配置 {fileSource} 的 tun.enable=false";
+        }
+
+        return uiTunEnabled
+            ? "Clash Verge 已配置开启 TUN，但未检测到在线虚拟网卡（请检查服务模式并重启 Clash Verge 内核）"
+            : string.Empty;
+    }
+
+    private static bool? ReadYamlTunEnabled(string path)
+    {
+        if (!File.Exists(path))
+        {
+            return null;
+        }
+
+        try
+        {
+            var inTun = false;
+            foreach (var line in File.ReadLines(path, Encoding.UTF8))
+            {
+                if (Regex.IsMatch(line, @"^tun:\s*$"))
+                {
+                    inTun = true;
+                    continue;
+                }
+
+                if (inTun && Regex.IsMatch(line, @"^\S"))
+                {
+                    break;
+                }
+
+                var match = Regex.Match(line, @"^\s+enable:\s*(true|false)\s*$", RegexOptions.IgnoreCase);
+                if (inTun && match.Success)
+                {
+                    return match.Groups[1].Value.Equals("true", StringComparison.OrdinalIgnoreCase);
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
+    }
+
+    private static bool? TryQueryLiveClashVergeTunEnabled(string clashDir)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            var pipeNames = DiscoverClashVergePipeNames(clashDir);
+            if (pipeNames.Count == 0)
+            {
+                return null;
+            }
+
+            var secret = ReadYamlScalar(Path.Combine(clashDir, "clash-verge.yaml"), "secret")
+                         ?? ReadYamlScalar(Path.Combine(clashDir, "config.yaml"), "secret")
+                         ?? string.Empty;
+
+            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(900));
+            foreach (var pipeName in pipeNames)
+            {
+                var endpoint = new ClashEndpoint(@"\\.\pipe\" + pipeName, secret, "clash-verge-pipe", pipeName);
+                try
+                {
+                    var (statusCode, body) = SendApiGetAsync(endpoint, "/configs", TimeSpan.FromMilliseconds(700), cts.Token)
+                        .GetAwaiter()
+                        .GetResult();
+                    if (statusCode is >= 200 and < 300 && !string.IsNullOrWhiteSpace(body))
+                    {
+                        using var doc = JsonDocument.Parse(body);
+                        if (doc.RootElement.TryGetProperty("tun", out var tunProp) &&
+                            tunProp.ValueKind == JsonValueKind.Object &&
+                            tunProp.TryGetProperty("enable", out var enableProp) &&
+                            enableProp.ValueKind is JsonValueKind.True or JsonValueKind.False)
+                        {
+                            return enableProp.GetBoolean();
+                        }
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+        catch
+        {
+        }
+
+        return null;
     }
 
     public static string DetectDefaultProxyGroup(string? clashDirOverride = null)
@@ -381,17 +490,41 @@ public sealed class ClashInspector
 
     private static bool TryRestartClashVerge()
     {
-        var exe = FindClashVergeExecutable();
-        if (string.IsNullOrWhiteSpace(exe))
-        {
-            return false;
-        }
-
         var running = Process.GetProcessesByName("clash-verge")
             .Concat(Process.GetProcessesByName("Clash Verge"))
             .ToArray();
         if (running.Length == 0)
         {
+            return false;
+        }
+
+        string? exe = null;
+        foreach (var proc in running)
+        {
+            if (string.IsNullOrWhiteSpace(exe))
+            {
+                try
+                {
+                    var candidate = proc.MainModule?.FileName;
+                    if (!string.IsNullOrWhiteSpace(candidate) && File.Exists(candidate))
+                    {
+                        exe = candidate;
+                    }
+                }
+                catch
+                {
+                }
+            }
+        }
+
+        exe ??= FindClashVergeExecutable();
+        if (string.IsNullOrWhiteSpace(exe))
+        {
+            foreach (var proc in running)
+            {
+                proc.Dispose();
+            }
+
             return false;
         }
 
@@ -864,7 +997,40 @@ public sealed class ClashInspector
         }
 
         var dir = FindClashVergeDir();
-        foreach (var fileName in new[] { "clash-verge.yaml", "config.yaml", "verge.yaml" })
+        ClashEndpoint? firstConfiguredTcp = null;
+
+        // 1. If clash-verge.yaml explicitly declares a TCP external-controller, prefer it when reachable
+        var mergedYaml = Path.Combine(dir, "clash-verge.yaml");
+        var mergedAddr = ClashEndpointValidator.NormalizeLoopbackEndpoint(ReadYamlScalar(mergedYaml, "external-controller"));
+        if (mergedAddr is not null)
+        {
+            var secret = ReadYamlScalar(mergedYaml, "secret") ?? string.Empty;
+            var candidate = new ClashEndpoint("http://" + mergedAddr, secret, "clash-verge.yaml");
+            firstConfiguredTcp = candidate;
+            if (await TestVersionEndpointAsync(candidate, cancellationToken))
+            {
+                return candidate;
+            }
+        }
+
+        // 2. Clash Verge Rev 2.x default on Windows: named pipe (\\.\pipe\verge-mihomo-production-* / sidecar-*)
+        if (OperatingSystem.IsWindows())
+        {
+            var pipeSecret = ReadYamlScalar(mergedYaml, "secret")
+                             ?? ReadYamlScalar(Path.Combine(dir, "config.yaml"), "secret")
+                             ?? string.Empty;
+            foreach (var pipeName in DiscoverClashVergePipeNames(dir))
+            {
+                var pipeEndpoint = new ClashEndpoint(@"\\.\pipe\" + pipeName, pipeSecret, "clash-verge-pipe", pipeName);
+                if (await TestVersionEndpointAsync(pipeEndpoint, cancellationToken))
+                {
+                    return pipeEndpoint;
+                }
+            }
+        }
+
+        // 3. Fallback to TCP external-controller in config.yaml / verge.yaml (Clash Verge 1.x or custom TCP setup)
+        foreach (var fileName in new[] { "config.yaml", "verge.yaml" })
         {
             var path = Path.Combine(dir, fileName);
             var rawAddr = ReadYamlScalar(path, "external-controller");
@@ -872,8 +1038,18 @@ public sealed class ClashInspector
             if (normalized is not null)
             {
                 var secret = ReadYamlScalar(path, "secret") ?? string.Empty;
-                return new ClashEndpoint("http://" + normalized, secret, fileName);
+                var candidate = new ClashEndpoint("http://" + normalized, secret, fileName);
+                firstConfiguredTcp ??= candidate;
+                if (await TestVersionEndpointAsync(candidate, cancellationToken))
+                {
+                    return candidate;
+                }
             }
+        }
+
+        if (firstConfiguredTcp is not null)
+        {
+            return firstConfiguredTcp;
         }
 
         if (ProxyClientModes.Normalize(config.ProxyClientMode) == ProxyClientModes.Auto)
@@ -882,6 +1058,72 @@ public sealed class ClashInspector
         }
 
         return null;
+    }
+
+    internal static string? NormalizePipeName(string? rawPipePath)
+    {
+        if (string.IsNullOrWhiteSpace(rawPipePath))
+        {
+            return null;
+        }
+
+        var trimmed = rawPipePath.Trim().Trim('"', '\'');
+        const string prefix = @"\\.\pipe\";
+        if (trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[prefix.Length..];
+        }
+
+        if (string.IsNullOrWhiteSpace(trimmed) || trimmed.IndexOfAny(new[] { '\\', '/', '\r', '\n' }) >= 0)
+        {
+            return null;
+        }
+
+        return trimmed;
+    }
+
+    internal static IReadOnlyList<string> DiscoverClashVergePipeNames(string clashDir)
+    {
+        var results = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        void AddPipe(string? candidate)
+        {
+            var normalized = NormalizePipeName(candidate);
+            if (!string.IsNullOrWhiteSpace(normalized) && seen.Add(normalized))
+            {
+                results.Add(normalized);
+            }
+        }
+
+        if (OperatingSystem.IsWindows())
+        {
+            try
+            {
+                var activePipes = Directory.GetFiles(@"\\.\pipe\", "verge-mihomo-*")
+                    .Select(NormalizePipeName)
+                    .Where(name => !string.IsNullOrWhiteSpace(name))
+                    .Cast<string>()
+                    .OrderBy(name => name.Contains("-production-", StringComparison.OrdinalIgnoreCase) ? 0
+                        : name.Contains("-sidecar-", StringComparison.OrdinalIgnoreCase) ? 1
+                        : 2)
+                    .ThenBy(name => name, StringComparer.OrdinalIgnoreCase);
+                foreach (var name in activePipes)
+                {
+                    AddPipe(name);
+                }
+            }
+            catch
+            {
+            }
+        }
+
+        foreach (var fileName in new[] { "clash-verge.yaml", "config.yaml" })
+        {
+            AddPipe(ReadYamlScalar(Path.Combine(clashDir, fileName), "external-controller-pipe"));
+        }
+
+        return results;
     }
 
     private static async Task<ClashEndpoint?> ResolveFlClashEndpointAsync(
@@ -1029,21 +1271,68 @@ public sealed class ClashInspector
         public uint ProcessId;
     }
 
+    internal static async Task<(int StatusCode, string Body)> SendApiGetAsync(
+        ClashEndpoint endpoint,
+        string path,
+        TimeSpan timeout,
+        CancellationToken cancellationToken)
+    {
+        if (!endpoint.IsNamedPipe)
+        {
+            using var request = CreateApiRequest(endpoint, path, includeSecret: true);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+            using var response = await LoopbackHttp.SendAsync(request, timeoutCts.Token);
+            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            return ((int)response.StatusCode, body);
+        }
+
+        async Task<(int StatusCode, string Body)> SendOverPipeAsync(bool includeSecret)
+        {
+            var connectTimeoutMs = Math.Clamp((int)timeout.TotalMilliseconds, 500, 2000);
+            using var handler = new SocketsHttpHandler
+            {
+                UseProxy = false,
+                ConnectCallback = async (_, ct) =>
+                {
+                    var pipe = new NamedPipeClientStream(".", endpoint.PipeName!, PipeDirection.InOut, PipeOptions.Asynchronous);
+                    try
+                    {
+                        await pipe.ConnectAsync(connectTimeoutMs, ct);
+                        return pipe;
+                    }
+                    catch
+                    {
+                        pipe.Dispose();
+                        throw;
+                    }
+                }
+            };
+            using var pipeClient = new HttpClient(handler) { Timeout = timeout };
+            using var request = CreateApiRequest(endpoint, path, includeSecret);
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeoutCts.CancelAfter(timeout);
+            using var response = await pipeClient.SendAsync(request, timeoutCts.Token);
+            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            return ((int)response.StatusCode, body);
+        }
+
+        var result = await SendOverPipeAsync(includeSecret: !string.IsNullOrWhiteSpace(endpoint.Secret));
+        if (result.StatusCode is 401 or 403 && !string.IsNullOrWhiteSpace(endpoint.Secret))
+        {
+            return await SendOverPipeAsync(includeSecret: false);
+        }
+
+        return result;
+    }
+
     private static async Task<bool> TestVersionEndpointAsync(ClashEndpoint endpoint, CancellationToken cancellationToken)
     {
         try
         {
-            using var request = CreateApiRequest(endpoint, "/version");
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(2));
-            using var response = await LoopbackHttp.SendAsync(request, timeout.Token);
-            if (!response.IsSuccessStatusCode)
-            {
-                return false;
-            }
-
-            var body = await response.Content.ReadAsStringAsync(timeout.Token);
-            return body.Contains("version", StringComparison.OrdinalIgnoreCase);
+            var (statusCode, body) = await SendApiGetAsync(endpoint, "/version", TimeSpan.FromMilliseconds(1500), cancellationToken);
+            return statusCode is >= 200 and < 300 &&
+                   body.Contains("version", StringComparison.OrdinalIgnoreCase);
         }
         catch
         {
@@ -1051,7 +1340,7 @@ public sealed class ClashInspector
         }
     }
 
-    private static async Task<string> DetectClashModeAsync(
+    internal static async Task<string> DetectClashModeAsync(
         ClashEndpoint? endpoint,
         bool isFlClash,
         CancellationToken cancellationToken)
@@ -1060,13 +1349,9 @@ public sealed class ClashInspector
         {
             try
             {
-                using var request = CreateApiRequest(endpoint, "/configs");
-                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(TimeSpan.FromSeconds(3));
-                using var response = await LoopbackHttp.SendAsync(request, timeout.Token);
-                if (response.IsSuccessStatusCode)
+                var (statusCode, body) = await SendApiGetAsync(endpoint, "/configs", TimeSpan.FromSeconds(3), cancellationToken);
+                if (statusCode is >= 200 and < 300)
                 {
-                    var body = await response.Content.ReadAsStringAsync(timeout.Token);
                     using var doc = JsonDocument.Parse(body);
                     if (doc.RootElement.TryGetProperty("mode", out var modeProp))
                     {
@@ -1109,7 +1394,7 @@ public sealed class ClashInspector
         return "unknown";
     }
 
-    private static async Task<(bool Ok, string Reason, IReadOnlyList<ClashRuleEntry> Rules)> FetchRulesAsync(
+    internal static async Task<(bool Ok, string Reason, IReadOnlyList<ClashRuleEntry> Rules)> FetchRulesAsync(
         ClashEndpoint? endpoint,
         CancellationToken cancellationToken)
     {
@@ -1120,21 +1405,17 @@ public sealed class ClashInspector
 
         try
         {
-            using var request = CreateApiRequest(endpoint, "/rules");
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            timeout.CancelAfter(TimeSpan.FromSeconds(6));
-            using var response = await LoopbackHttp.SendAsync(request, timeout.Token);
-            if ((int)response.StatusCode is 401 or 403)
+            var (statusCode, body) = await SendApiGetAsync(endpoint, "/rules", TimeSpan.FromSeconds(6), cancellationToken);
+            if (statusCode is 401 or 403)
             {
                 return (false, "auth-failed", Array.Empty<ClashRuleEntry>());
             }
 
-            if (!response.IsSuccessStatusCode)
+            if (statusCode is < 200 or >= 300)
             {
-                return (false, $"http-{(int)response.StatusCode}", Array.Empty<ClashRuleEntry>());
+                return (false, $"http-{statusCode}", Array.Empty<ClashRuleEntry>());
             }
 
-            var body = await response.Content.ReadAsStringAsync(timeout.Token);
             using var doc = JsonDocument.Parse(body);
             if (!doc.RootElement.TryGetProperty("rules", out var rulesProp) ||
                 rulesProp.ValueKind != JsonValueKind.Array)
@@ -1153,11 +1434,19 @@ public sealed class ClashInspector
 
             return (true, string.Empty, list);
         }
+        catch (TimeoutException)
+        {
+            return (false, "timeout", Array.Empty<ClashRuleEntry>());
+        }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
             return (false, "timeout", Array.Empty<ClashRuleEntry>());
         }
         catch (HttpRequestException)
+        {
+            return (false, "connect-failed", Array.Empty<ClashRuleEntry>());
+        }
+        catch (IOException)
         {
             return (false, "connect-failed", Array.Empty<ClashRuleEntry>());
         }
@@ -1167,10 +1456,11 @@ public sealed class ClashInspector
         }
     }
 
-    private static HttpRequestMessage CreateApiRequest(ClashEndpoint endpoint, string path)
+    private static HttpRequestMessage CreateApiRequest(ClashEndpoint endpoint, string path, bool includeSecret)
     {
-        var request = new HttpRequestMessage(HttpMethod.Get, endpoint.BaseUrl.TrimEnd('/') + path);
-        if (!string.IsNullOrWhiteSpace(endpoint.Secret))
+        var baseUrl = endpoint.IsNamedPipe ? "http://localhost" : endpoint.BaseUrl.TrimEnd('/');
+        var request = new HttpRequestMessage(HttpMethod.Get, baseUrl + path);
+        if (includeSecret && !string.IsNullOrWhiteSpace(endpoint.Secret))
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", endpoint.Secret);
         }

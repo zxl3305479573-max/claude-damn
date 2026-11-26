@@ -47,10 +47,15 @@ foreach ($psScript in @((Join-Path $root 'build.ps1'), (Join-Path $root 'install
 }
 
 $publish = Join-Path $root 'publish\win-x64'
-$runningProcesses = Get-Process -Name 'ClaudeDesktopGuardian.App', 'ClaudeDesktopGuardian.Helper' -ErrorAction SilentlyContinue
-if ($runningProcesses) {
-    $names = $runningProcesses.ProcessName -join ', '
-    throw "请先退出 Guardian 后再构建，当前占用发布文件的进程：$names"
+$publishRootPrefix = (Join-Path $root 'publish') + '\'
+$lockingProcesses = Get-Process -Name 'ClaudeDesktopGuardian.App', 'ClaudeDesktopGuardian.Helper', 'ClaudeDesktopGuardian.Cli' -ErrorAction SilentlyContinue |
+    Where-Object {
+        $procPath = try { $_.Path } catch { $null }
+        -not [string]::IsNullOrWhiteSpace($procPath) -and $procPath.StartsWith($publishRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+if ($lockingProcesses) {
+    $names = $lockingProcesses.ProcessName -join ', '
+    throw "请先退出占用 publish 目录的 Guardian 进程后再构建：$names"
 }
 
 foreach ($dir in @($publish, (Join-Path $root 'publish\helper-win-x64'), (Join-Path $root 'publish\cli-win-x64'))) {
