@@ -1,5 +1,6 @@
 ﻿param(
     [switch]$Uninstall,
+    [switch]$SkipBuild,
     [string]$InstallDir = (Join-Path $env:ProgramFiles 'ClaudeDesktopGuardian')
 )
 
@@ -49,12 +50,28 @@ if ($Uninstall) {
     exit 0
 }
 
-& (Join-Path $root 'build.ps1')
-if (Test-Path -LiteralPath $installRoot) {
-    Remove-Item -LiteralPath $installRoot -Recurse -Force
+$publishDir = Join-Path $root 'publish\win-x64'
+if (-not $SkipBuild -or -not (Test-Path -LiteralPath (Join-Path $publishDir 'ClaudeDesktopGuardian.App.exe'))) {
+    & (Join-Path $root 'build.ps1')
 }
+
+# Stop running Guardian processes cleanly before updating install directory
+$existingProcs = Get-Process -Name 'ClaudeDesktopGuardian.App', 'ClaudeDesktopGuardian.Helper', 'ClaudeDesktopGuardian.Cli' -ErrorAction SilentlyContinue
+if ($existingProcs) {
+    $existingProcs | Stop-Process -Force -ErrorAction SilentlyContinue
+    for ($i = 0; $i -lt 25; $i++) {
+        Start-Sleep -Milliseconds 200
+        if (-not (Get-Process -Name 'ClaudeDesktopGuardian.App', 'ClaudeDesktopGuardian.Helper', 'ClaudeDesktopGuardian.Cli' -ErrorAction SilentlyContinue)) {
+            break
+        }
+    }
+}
+
 New-Item -ItemType Directory -Force -Path $installRoot | Out-Null
-Copy-Item -Path (Join-Path $root 'publish\win-x64\*') -Destination $installRoot -Recurse -Force
+& robocopy $publishDir $installRoot /MIR /R:3 /W:1 /NFL /NDL /NJH /NJS /NP | Out-Null
+if ($LASTEXITCODE -ge 8) {
+    throw "复制安装文件到 $installRoot 失败（robocopy 退出码 $LASTEXITCODE），请确认没有其他程序占用该目录。"
+}
 
 $app = Join-Path $installRoot 'ClaudeDesktopGuardian.App.exe'
 $helper = Join-Path $installRoot 'ClaudeDesktopGuardian.Helper.exe'
