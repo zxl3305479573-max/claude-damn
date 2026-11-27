@@ -964,11 +964,7 @@ public sealed class AccountSlotManager
 
         try
         {
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = target,
-                UseShellExecute = true
-            });
+            ClaudeLauncher.Launch(target);
             return true;
         }
         catch

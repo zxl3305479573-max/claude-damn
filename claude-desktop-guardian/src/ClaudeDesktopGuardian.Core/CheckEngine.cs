@@ -160,8 +160,9 @@ public sealed class GuardianCheckEngine
         bool full,
         CancellationToken cancellationToken)
     {
-        var processes = _processInspector.FindClaudeProcessTree();
-        var network = await _probe.CaptureNetworkAsync(config, processes, full, cancellationToken);
+        var processes = await Task.Run(_processInspector.FindClaudeProcessTree, cancellationToken);
+        var network = await Task.Run(
+            () => _probe.CaptureNetworkAsync(config, processes, full, cancellationToken), cancellationToken);
 
         var runBrowserWebRtc = full &&
                                _browserProbe is not null &&
@@ -200,20 +201,21 @@ public sealed class GuardianCheckEngine
         GuardianConfig config,
         CancellationToken cancellationToken)
     {
-        var processes = _processInspector.FindClaudeProcessTree();
+        var processes = await Task.Run(_processInspector.FindClaudeProcessTree, cancellationToken);
         NetworkSnapshot network;
         if (_probe is ISingleCheckProbe singleProbe)
         {
-            network = await singleProbe.CaptureSingleCheckAsync(
+            network = await Task.Run(() => singleProbe.CaptureSingleCheckAsync(
                 previousReport.Network,
                 checkId,
                 config,
                 processes,
-                cancellationToken);
+                cancellationToken), cancellationToken);
         }
         else
         {
-            network = await _probe.CaptureNetworkAsync(config, processes, full: true, cancellationToken);
+            network = await Task.Run(
+                () => _probe.CaptureNetworkAsync(config, processes, full: true, cancellationToken), cancellationToken);
         }
 
         if (string.Equals(checkId, GuardianCheckIds.WebRtc, StringComparison.OrdinalIgnoreCase) &&
@@ -837,6 +839,16 @@ public sealed class GuardianCheckEngine
             return Result(GuardianCheckIds.WebRtc, "WebRTC 泄露", CheckStatus.Fail, blocking: true, detail);
         }
 
+        if (webrtcStatus == CheckStatus.Warn)
+        {
+            return Result(
+                GuardianCheckIds.WebRtc,
+                "WebRTC 泄露",
+                CheckStatus.Warn,
+                blocking: false,
+                $"原生 STUN 与浏览器公网候选均与出口一致，存在部分 ICE 解析告警；{detail}");
+        }
+
         return OptionalResult(config, GuardianCheckIds.WebRtc, "WebRTC 泄露", webrtcStatus, blockingWhenFail: true, detail);
     }
 
@@ -1157,16 +1169,27 @@ public sealed class GuardianCheckEngine
             return CheckStatus.Fail;
         }
 
-        if (browser.Errors is { Count: > 0 })
-        {
-            return CheckStatus.Unknown;
-        }
-
         if (!browser.Supported ||
             !browser.Complete ||
             !string.Equals(browser.Status, "complete", StringComparison.OrdinalIgnoreCase))
         {
             return CheckStatus.Unknown;
+        }
+
+        if (browser.Errors is { Count: > 0 })
+        {
+            var verifiedLookupWarnings = nativeStatus == CheckStatus.Ok &&
+                publicCandidates.Length > 0 &&
+                network.StunResults.All(result =>
+                    result.Status == "ok" && !string.IsNullOrWhiteSpace(result.Address)) &&
+                browser.Errors.All(error =>
+                    error.Code == 701 &&
+                    error.Text.Contains("STUN host lookup received error", StringComparison.OrdinalIgnoreCase) &&
+                    network.StunResults.Any(result => string.Equals(
+                        error.Url,
+                        $"stun:{result.Server}:{result.Port}",
+                        StringComparison.OrdinalIgnoreCase)));
+            return verifiedLookupWarnings ? CheckStatus.Warn : CheckStatus.Unknown;
         }
 
         if (nativeStatus != CheckStatus.Ok)

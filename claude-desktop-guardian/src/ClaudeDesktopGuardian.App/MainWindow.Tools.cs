@@ -500,13 +500,9 @@ public partial class MainWindow
                 return;
             }
 
-            Process.Start(new ProcessStartInfo
-            {
-                FileName = target,
-                UseShellExecute = true
-            });
+            await Task.Run(() => ClaudeLauncher.Launch(target));
             _logger.LogAction("safe-launch", "ok", 0, report?.Checks, _config.LoggingEnabled);
-            LastCheckText.Text = $"已通过安全门禁并启动 Claude（{DateTime.Now:HH:mm:ss}）";
+            LastCheckText.Text = $"已通过安全门禁并启动 Claude（绕过系统代理，由 TUN 接管；{DateTime.Now:HH:mm:ss}）";
         }
         catch (Exception ex)
         {

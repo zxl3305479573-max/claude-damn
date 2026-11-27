@@ -29,6 +29,7 @@ public partial class MainWindow : Window
     private readonly NotifyIcon _trayIcon;
     private readonly ToolStripMenuItem _compactWindowMenuItem;
     private readonly SemaphoreSlim _checkGate = new(1, 1);
+    private CancellationTokenSource _checkCancellation = new();
 
     private GuardianConfig _config;
     private GuardianReport? _lastReport;
@@ -37,6 +38,7 @@ public partial class MainWindow : Window
     private bool _ignoreWebRtc;
     private bool _compactWindowEnabled;
     private bool _allowExit;
+    private bool _exiting;
     private bool _operationInProgress;
     private bool _timezoneRecoveryReady;
     private string _timezoneOperationError = string.Empty;
@@ -103,9 +105,11 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) =>
         {
+            _timer?.Stop();
             _compactWindow?.Close();
             _processMonitor.Dispose();
             _checkGate.Dispose();
+            _checkCancellation.Dispose();
             _browserProbe.Dispose();
             _trayIcon.Dispose();
         };
@@ -117,6 +121,11 @@ public partial class MainWindow : Window
         };
         _timer.Tick += async (_, _) =>
         {
+            if (_exiting || _checkGate.CurrentCount == 0)
+            {
+                return;
+            }
+
             var full = DateTimeOffset.UtcNow - _lastFullCheck >=
                        TimeSpan.FromMinutes(_config.FullIntervalMinutes);
             await RunCheckAsync(full);
@@ -124,14 +133,24 @@ public partial class MainWindow : Window
         Loaded += async (_, _) =>
         {
             var helperReady = await EnsureHelperAvailableAsync();
+            if (_exiting || _allowExit)
+            {
+                return;
+            }
+
             _processMonitor.Changed += ClaudeProcessMonitor_Changed;
             _processMonitor.TryStart();
             _timezoneRecoveryReady = helperReady && await RestoreStaleTimezoneAsync();
+            if (_exiting || _allowExit)
+            {
+                return;
+            }
+
             _timer.Start();
             _lastFullCheck = DateTimeOffset.UtcNow;
             await RunCheckAsync(true);
 
-            if (_compactWindowEnabled)
+            if (_compactWindowEnabled && !_exiting && !_allowExit)
             {
                 ShowCompactWindow();
             }
@@ -140,7 +159,7 @@ public partial class MainWindow : Window
 
     private bool TryBeginOperation(string statusHint)
     {
-        if (_operationInProgress)
+        if (_operationInProgress || _exiting || _allowExit)
         {
             return false;
         }
@@ -294,6 +313,11 @@ public partial class MainWindow : Window
 
     private async void ExitFromTray()
     {
+        if (_exiting || _allowExit)
+        {
+            return;
+        }
+
         if (_operationInProgress)
         {
             ShowFromTray();
@@ -305,6 +329,11 @@ public partial class MainWindow : Window
             return;
         }
 
+        _exiting = true;
+        _timer.Stop();
+        _checkCancellation.Cancel();
+        LastCheckText.Text = "正在停止检查并恢复时区与网络策略…";
+        await _checkGate.WaitAsync();
         try
         {
             if (!await RestoreTimezoneAsync())
@@ -328,13 +357,28 @@ public partial class MainWindow : Window
             await SendHelperAsync("wfp-disable", null);
 
             _allowExit = true;
-            _trayIcon.Visible = false;
-            Close();
         }
         catch (Exception ex)
         {
             ShowFromTray();
             WpfMessageBox.Show($"退出恢复时发生错误：{ex.Message}", "退出失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            _checkGate.Release();
+            if (!_allowExit)
+            {
+                _checkCancellation.Dispose();
+                _checkCancellation = new CancellationTokenSource();
+                _exiting = false;
+                _timer.Start();
+            }
+        }
+
+        if (_allowExit)
+        {
+            _trayIcon.Visible = false;
+            Close();
         }
     }
 
@@ -389,15 +433,21 @@ public partial class MainWindow : Window
             return;
         }
 
-        await _checkGate.WaitAsync();
+        if (!await EnterCheckAsync())
+        {
+            return;
+        }
+
         var sw = Stopwatch.StartNew();
         try
         {
             LastCheckText.Text = $"正在单项复检 {checkId}…";
-            using var retestTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(25));
+            using var retestTimeout = CancellationTokenSource.CreateLinkedTokenSource(_checkCancellation.Token);
+            retestTimeout.CancelAfter(TimeSpan.FromSeconds(25));
             var report = _lastReport is null
                 ? await _engine.RunAsync(_config, full: true, retestTimeout.Token)
                 : await _engine.RunSingleCheckAsync(_lastReport, checkId, _config, retestTimeout.Token);
+            retestTimeout.Token.ThrowIfCancellationRequested();
             _lastReport = report;
             _selectedCheckId = checkId;
             Render(report);
@@ -410,6 +460,9 @@ public partial class MainWindow : Window
                 sw.ElapsedMilliseconds,
                 report.Checks,
                 _config.LoggingEnabled);
+        }
+        catch (OperationCanceledException) when (_exiting)
+        {
         }
         catch (Exception ex)
         {
@@ -483,7 +536,11 @@ public partial class MainWindow : Window
 
     private async Task<GuardianReport?> RunCheckAsync(bool full)
     {
-        await _checkGate.WaitAsync();
+        if (!await EnterCheckAsync())
+        {
+            return null;
+        }
+
         try
         {
             return await RunCheckCoreAsync(full);
@@ -492,6 +549,31 @@ public partial class MainWindow : Window
         {
             _checkGate.Release();
         }
+    }
+
+    private async Task<bool> EnterCheckAsync()
+    {
+        if (_exiting || _allowExit)
+        {
+            return false;
+        }
+
+        try
+        {
+            await _checkGate.WaitAsync(_checkCancellation.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+
+        if (_exiting || _allowExit)
+        {
+            _checkGate.Release();
+            return false;
+        }
+
+        return true;
     }
 
     private async Task<GuardianReport?> RunCheckCoreAsync(bool full)
@@ -507,8 +589,10 @@ public partial class MainWindow : Window
                 _lastFullCheck = DateTimeOffset.UtcNow;
             }
 
-            using var cycleTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(full ? 45 : 20));
+            using var cycleTimeout = CancellationTokenSource.CreateLinkedTokenSource(_checkCancellation.Token);
+            cycleTimeout.CancelAfter(TimeSpan.FromSeconds(full ? 45 : 20));
             var report = await _engine.RunAsync(_config, full, cycleTimeout.Token);
+            cycleTimeout.Token.ThrowIfCancellationRequested();
             report = report with
             {
                 Network = report.Network with
@@ -542,6 +626,10 @@ public partial class MainWindow : Window
             }
 
             return _lastReport;
+        }
+        catch (OperationCanceledException) when (_exiting)
+        {
+            return null;
         }
         catch (OperationCanceledException)
         {

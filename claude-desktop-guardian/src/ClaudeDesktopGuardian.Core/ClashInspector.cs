@@ -90,7 +90,9 @@ public sealed class ClashInspector
         return null;
     }
 
-    public static string ReadClashVergeTunDiagnostic(string proxyClientMode)
+    public static async Task<string> ReadClashVergeTunDiagnosticAsync(
+        string proxyClientMode,
+        CancellationToken cancellationToken)
     {
         if (!string.Equals(proxyClientMode, ProxyClientModes.ClashVerge, StringComparison.OrdinalIgnoreCase) &&
             !string.Equals(proxyClientMode, ProxyClientModes.Auto, StringComparison.OrdinalIgnoreCase))
@@ -104,7 +106,15 @@ public sealed class ClashInspector
             "true",
             StringComparison.OrdinalIgnoreCase);
 
-        var liveTunEnabled = TryQueryLiveClashVergeTunEnabled(dir);
+        var secret = ReadYamlScalar(Path.Combine(dir, "clash-verge.yaml"), "secret")
+                     ?? ReadYamlScalar(Path.Combine(dir, "config.yaml"), "secret")
+                     ?? string.Empty;
+        var endpoints = OperatingSystem.IsWindows()
+            ? DiscoverClashVergePipeNames(dir)
+                .Select(pipeName => new ClashEndpoint(@"\\.\pipe\" + pipeName, secret, "clash-verge-pipe", pipeName))
+                .ToArray()
+            : Array.Empty<ClashEndpoint>();
+        var liveTunEnabled = await TryQueryLiveClashVergeTunEnabledAsync(endpoints, cancellationToken).ConfigureAwait(false);
         if (liveTunEnabled.HasValue)
         {
             return FormatClashVergeTunDiagnostic(uiTunEnabled, liveTunEnabled, fileSource: null, fileTunEnabled: null);
@@ -193,34 +203,22 @@ public sealed class ClashInspector
         return null;
     }
 
-    private static bool? TryQueryLiveClashVergeTunEnabled(string clashDir)
+    internal static async Task<bool?> TryQueryLiveClashVergeTunEnabledAsync(
+        IReadOnlyList<ClashEndpoint> endpoints,
+        CancellationToken cancellationToken)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return null;
-        }
-
+        cancellationToken.ThrowIfCancellationRequested();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        cts.CancelAfter(TimeSpan.FromMilliseconds(900));
         try
         {
-            var pipeNames = DiscoverClashVergePipeNames(clashDir);
-            if (pipeNames.Count == 0)
+            foreach (var endpoint in endpoints)
             {
-                return null;
-            }
-
-            var secret = ReadYamlScalar(Path.Combine(clashDir, "clash-verge.yaml"), "secret")
-                         ?? ReadYamlScalar(Path.Combine(clashDir, "config.yaml"), "secret")
-                         ?? string.Empty;
-
-            using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(900));
-            foreach (var pipeName in pipeNames)
-            {
-                var endpoint = new ClashEndpoint(@"\\.\pipe\" + pipeName, secret, "clash-verge-pipe", pipeName);
+                cts.Token.ThrowIfCancellationRequested();
                 try
                 {
-                    var (statusCode, body) = SendApiGetAsync(endpoint, "/configs", TimeSpan.FromMilliseconds(700), cts.Token)
-                        .GetAwaiter()
-                        .GetResult();
+                    var (statusCode, body) = await SendApiGetAsync(
+                        endpoint, "/configs", TimeSpan.FromMilliseconds(700), cts.Token).ConfigureAwait(false);
                     if (statusCode is >= 200 and < 300 && !string.IsNullOrWhiteSpace(body))
                     {
                         using var doc = JsonDocument.Parse(body);
@@ -233,12 +231,12 @@ public sealed class ClashInspector
                         }
                     }
                 }
-                catch
+                catch (Exception) when (!cancellationToken.IsCancellationRequested)
                 {
                 }
             }
         }
-        catch
+        catch (Exception) when (!cancellationToken.IsCancellationRequested)
         {
         }
 
@@ -1282,8 +1280,8 @@ public sealed class ClashInspector
             using var request = CreateApiRequest(endpoint, path, includeSecret: true);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(timeout);
-            using var response = await LoopbackHttp.SendAsync(request, timeoutCts.Token);
-            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            using var response = await LoopbackHttp.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
             return ((int)response.StatusCode, body);
         }
 
@@ -1298,7 +1296,7 @@ public sealed class ClashInspector
                     var pipe = new NamedPipeClientStream(".", endpoint.PipeName!, PipeDirection.InOut, PipeOptions.Asynchronous);
                     try
                     {
-                        await pipe.ConnectAsync(connectTimeoutMs, ct);
+                        await pipe.ConnectAsync(connectTimeoutMs, ct).ConfigureAwait(false);
                         return pipe;
                     }
                     catch
@@ -1312,15 +1310,15 @@ public sealed class ClashInspector
             using var request = CreateApiRequest(endpoint, path, includeSecret);
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeoutCts.CancelAfter(timeout);
-            using var response = await pipeClient.SendAsync(request, timeoutCts.Token);
-            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            using var response = await pipeClient.SendAsync(request, timeoutCts.Token).ConfigureAwait(false);
+            var body = await response.Content.ReadAsStringAsync(timeoutCts.Token).ConfigureAwait(false);
             return ((int)response.StatusCode, body);
         }
 
-        var result = await SendOverPipeAsync(includeSecret: !string.IsNullOrWhiteSpace(endpoint.Secret));
+        var result = await SendOverPipeAsync(includeSecret: !string.IsNullOrWhiteSpace(endpoint.Secret)).ConfigureAwait(false);
         if (result.StatusCode is 401 or 403 && !string.IsNullOrWhiteSpace(endpoint.Secret))
         {
-            return await SendOverPipeAsync(includeSecret: false);
+            return await SendOverPipeAsync(includeSecret: false).ConfigureAwait(false);
         }
 
         return result;

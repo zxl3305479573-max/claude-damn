@@ -68,7 +68,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         CancellationToken cancellationToken)
     {
         var (_, proxyClientAlive, proxyDetail) = DetectProxyClient(config.ProxyClientMode);
-        var (adapter, _, _, adapterDiag) = FindBestVpnAdapter(config);
+        var (adapter, _, _, adapterDiag) = await FindBestVpnAdapterAsync(config, cancellationToken);
         if (adapter is null || !proxyClientAlive)
         {
             return new RegionAdaptProbeResult(
@@ -122,7 +122,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         CancellationToken cancellationToken)
     {
         var (proxyClientName, proxyClientAlive, proxyClientDetail) = DetectProxyClient(config.ProxyClientMode);
-        var (adapter, isFakeIp, hasDefaultRoute, adapterDiagnostic) = FindBestVpnAdapter(config);
+        var (adapter, isFakeIp, hasDefaultRoute, adapterDiagnostic) = await FindBestVpnAdapterAsync(config, cancellationToken);
 
         var adapterGuid = adapter?.Id ?? string.Empty;
         var localAddress = adapter?.GetIPProperties().UnicastAddresses
@@ -413,7 +413,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         CancellationToken cancellationToken)
     {
         var (proxyClientName, proxyClientAlive, proxyClientDetail) = DetectProxyClient(config.ProxyClientMode);
-        var (adapter, isFakeIp, hasDefaultRoute, adapterDiagnostic) = FindBestVpnAdapter(config);
+        var (adapter, isFakeIp, hasDefaultRoute, adapterDiagnostic) = await FindBestVpnAdapterAsync(config, cancellationToken);
 
         var adapterGuid = adapter?.Id ?? string.Empty;
         var localAddress = adapter?.GetIPProperties().UnicastAddresses
@@ -849,6 +849,23 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         }
     }
 
+    private static async Task<(NetworkInterface? Adapter, bool IsFakeIp, bool HasDefaultRoute, string Diagnostic)> FindBestVpnAdapterAsync(
+        GuardianConfig config,
+        CancellationToken cancellationToken)
+    {
+        var result = FindBestVpnAdapter(config);
+        if (result.Adapter is null)
+        {
+            var diagnostic = await ClashInspector.ReadClashVergeTunDiagnosticAsync(config.ProxyClientMode, cancellationToken);
+            if (!string.IsNullOrEmpty(diagnostic))
+            {
+                return (null, false, false, diagnostic);
+            }
+        }
+
+        return result;
+    }
+
     public static (NetworkInterface? Adapter, bool IsFakeIp, bool HasDefaultRoute, string Diagnostic) FindBestVpnAdapter(
         GuardianConfig config)
     {
@@ -885,12 +902,9 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
 
         if (candidates.Length == 0)
         {
-            var clashDiag = ClashInspector.ReadClashVergeTunDiagnostic(config.ProxyClientMode);
-            var diagnostic = !string.IsNullOrEmpty(clashDiag)
-                ? clashDiag
-                : matched.Any()
-                    ? "检测到虚拟网卡，但没有有效 IPv4 地址"
-                    : "没有识别到在线 VPN/TUN 网卡";
+            var diagnostic = matched.Any()
+                ? "检测到虚拟网卡，但没有有效 IPv4 地址"
+                : "没有识别到在线 VPN/TUN 网卡";
             return (null, false, false, diagnostic);
         }
 

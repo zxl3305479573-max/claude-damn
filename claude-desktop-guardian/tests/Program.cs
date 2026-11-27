@@ -14,6 +14,23 @@ using ClaudeDesktopGuardian.Helper;
 
 var failures = new List<string>();
 
+var inheritedProxy = Environment.GetEnvironmentVariable("HTTPS_PROXY");
+try
+{
+    Environment.SetEnvironmentVariable("HTTPS_PROXY", "http://127.0.0.1:12345");
+    var directStart = ClaudeLauncher.CreateStartInfo(@"C:\Programs\Claude\Claude.exe");
+    Assert(!directStart.UseShellExecute && directStart.ArgumentList.SequenceEqual(new[] { "--no-proxy-server" }),
+        "Claude 必须绕过系统代理启动，连接由 TUN 与 WFP 约束", failures);
+    Assert(!directStart.Environment.Keys.Any(name => name.Equals("HTTPS_PROXY", StringComparison.OrdinalIgnoreCase)),
+        "Claude 子进程不得继承显式 HTTPS 代理", failures);
+    Assert(Environment.GetEnvironmentVariable("HTTPS_PROXY") == "http://127.0.0.1:12345",
+        "Claude 启动参数不得影响 Guardian 或其他程序的代理环境", failures);
+}
+finally
+{
+    Environment.SetEnvironmentVariable("HTTPS_PROXY", inheritedProxy);
+}
+
 // =========================================================================
 // 1. Existing Baseline Tests (Preserved 100%)
 // =========================================================================
@@ -1724,6 +1741,9 @@ using (var pipeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
         failures);
     await serverTask;
 }
+
+await WebRtcStatusTests.RunAsync(failures);
+await UiResponsivenessTests.RunAsync(failures);
 
 if (failures.Count > 0)
 {

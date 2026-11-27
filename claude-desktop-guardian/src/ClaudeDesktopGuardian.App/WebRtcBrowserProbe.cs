@@ -119,8 +119,8 @@ public sealed class WebRtcBrowserProbe : IWebRtcBrowserProbe, IDisposable
             _environmentTask ??= CoreWebView2Environment.CreateAsync(
                 browserExecutableFolder: null,
                 userDataFolder: userDataFolder);
-            var environment = await _environmentTask;
-            await _webView.EnsureCoreWebView2Async(environment);
+            var environment = await _environmentTask.WaitAsync(cancellationToken);
+            await _webView.EnsureCoreWebView2Async(environment).WaitAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
             var coreWebView = _webView.CoreWebView2;
             _initialized = coreWebView is not null;
@@ -129,6 +129,10 @@ public sealed class WebRtcBrowserProbe : IWebRtcBrowserProbe, IDisposable
                 coreWebView.Settings.IsWebMessageEnabled = true;
             }
             return _initialized;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception exception)
         {

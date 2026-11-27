@@ -7,7 +7,7 @@ Windows 上的 Claude Desktop 网络守护与多账号安全工作台（.NET 8 /
 ### 1. 内核级双层网络防护与 Fail-Closed 门禁
 - **WFP 内核出站锁 + 防火墙急停双层协同**：可选启用原生 Windows Filtering Platform (`fwpuclnt.dll`) TUN-only 出站白名单（支持可选放行本机回环以兼容本地 MCP/代理；启用时会主动结束当前用户既有 Claude Desktop 进程并复核退出，避免旧连接绕过 `ALE_AUTH_CONNECT`），同时保留异常触发时的幂等防火墙阻断 + 归属校验进程树急停。
 - **Fail-Closed 阻断锁定与安全启动门禁**：异常触发阻断后持续锁定状态，Claude 退出或 5 秒轻量巡检不会自动解封；阻断期间若 Claude 重新启动会再次强制终止；提供「安全启动 Claude」按钮与托盘入口，仅在未阻断且硬性环境检查全部通过时放行启动（支持 EXE 与 MSIX）。
-- **单实例保护与巡检超时保护**：主程序通过互斥锁防双开（重复启动自动唤起已有窗口）；单轮轻量/完整检查均带超时取消，避免卡死监控循环。
+- **单实例保护与巡检超时保护**：主程序通过互斥锁防双开（重复启动自动唤起已有窗口）；进程枚举与网络探测在后台执行，Clash TUN 命名管道诊断全程异步，WebView2 保留在界面线程并响应初始化取消。单轮检查带超时，托盘退出先停止巡检、取消并等待当前检查结束，再恢复时区与网络策略，避免检查与退出互相干扰。
 - **系统代理与 TUN 路径一致性检测**：检测到系统 HTTP 代理启用时并行探测代理路径与绕过代理的 TUN 路径，面板保留两类证据并在国家或出口分歧时阻断。
 - **传统 EXE 与 MSIX 双安装态兼容**：自动发现 `%LOCALAPPDATA%\AnthropicClaude`、`%LOCALAPPDATA%\Programs\Claude` 与 MSIX `WindowsApps\Claude_` 及其 `Claude-Data\<PFN>` 数据目录。
 - **严格路径门禁**：代理客户端或 VPN/TUN 网卡离线时立即跳过所有外网探针（避免真实 IP 直连暴露）。
@@ -25,6 +25,8 @@ Windows 上的 Claude Desktop 网络守护与多账号安全工作台（.NET 8 /
   - Clash Verge / FlClash 运行模式与前 16 条内核置顶规则审计（13 个 Claude 相关域名 + 3 个仅 UDP STUN 端口；FlClash 支持自动探测本机监听端口）
   - 出口 ASN 网络类型审计（`ipinfo.io` + `PeeringDB`）与 Claude HTTPS 生态可达性
   - 可插拔 4 项 IP 信誉检测（`IP 纯净度`、`IP 代理标记`、`IP 机房属性`、`IP 黑名单`，仅 HTTPS + `{ip}` 模板或 `?ip=` 参数 + `X-API-Key` 请求头 + 本地 TTL 缓存）
+
+浏览器 ICE 收集完成、存在匹配 HTTP 出口基准的公网候选、原生 STUN 每项均成功且地址全部匹配出口时，如果仅剩 `701 / STUN host lookup received error`，并且每条错误对应的 STUN 服务也已由原生探针验证成功，WebRTC 显示非阻断警告「出口一致，存在部分 ICE 解析告警」，保留原始错误与候选证据。缺少出口基准、公网候选或原生成功结果，任一原生探针未完成，或者存在其他 ICE 错误时，仍保持未验证；发现非预期公网地址仍判失败，不能通过忽略或非关键降级放行。
 
 ### 3. 多账号事务隔离与加密快照迁移
 - **A–D 账号槽位隔离切换**：Fail-Closed 环境门禁（阻断锁定或环境检查异常时拒绝切换），采用进程互斥锁、`.new`/`.previous` 暂存换位、残留恢复保护和原子指针提交，失败自动回滚；数据独立存储在 `%LOCALAPPDATA%\ClaudeDesktopGuardian\accounts`。
@@ -57,7 +59,19 @@ node --check src\ClaudeDesktopGuardian.App\web\webrtc\leak-check.js
 .\build.ps1
 ```
 
+测试包含独立 STA / WPF Dispatcher 回归：完整、轻量与单项检查执行期间仍能处理界面操作，WebView2 探测仍在界面线程；Clash 运行态 TUN 诊断使用随机本机测试管道验证开启、关闭、无响应超时和主动取消，不访问真实代理或修改系统设置。
+
+若旧版卡在检查且重复打开仍无响应，单实例机制会继续唤起同一个旧进程。更新时需先结束旧实例，再启动修复版本；仅打开另一个目录的 EXE 不会切换到新版本。维护者部署前保留原安装目录的备份，需要回滚时退出新版并还原备份；本次修复不迁移账号或配置格式。
+
 ## 安装与卸载
+
+### Claude 仅走 TUN，同时保留系统代理
+
+Guardian 的「安全启动 Claude」及切换账号后的自动启动会传入 Electron 支持的 `--no-proxy-server`，使 Claude 绕过 Windows 系统代理，由 TUN 接管连接。传统 EXE 使用独立进程启动参数，MSIX 使用 Windows 应用激活接口传参；传统 EXE 的子进程还会移除继承的 HTTP/HTTPS/ALL_PROXY 环境变量，不修改系统代理或其他应用环境。Codex 等应用可以继续使用系统代理。
+
+要求严格限定虚拟网卡时，启用 WFP 严格模式并保持「允许本机回环」关闭。启动参数负责绕过代理，WFP 负责拦截非指定 TUN 的连接，两者不能相互替代。启动前须先完全退出 Claude；已有实例会拒绝启动，防止单实例转发导致参数不生效。请通过 Guardian 启动；从原快捷方式或自动启动进入的 Claude 不会自动获得该参数，严格 WFP 会继续阻止它连接本机代理。TUN 之后的代理节点选择仍由 Clash 规则决定。
+
+验证时保留系统代理开启，确认 Claude 主进程含 `--no-proxy-server`、WFP 显示拦截直连与回环，并在 Claude 界面验证加载及消息发送。隔离测试只能证明启动参数和环境隔离，不能替代客户端联网与断开 TUN 后的真机阻断验证。回滚可还原更新前的 Guardian 安装备份，系统代理和账号格式无需迁移。
 
 正式运行需要系统安装 Microsoft Edge WebView2 Runtime。`build.ps1` 会将 `App.exe`、`Helper.exe` 与 `Cli.exe` 发布到同一 `publish\win-x64` 目录共享单份 .NET 8 运行时（总体积约 164 MB）。使用管理员 PowerShell 安装或卸载：
 
