@@ -55,6 +55,68 @@ var releaseApiService = new GuardianUpdateService(new HttpClient(releaseApiHandl
 var checkedUpdate = await releaseApiService.CheckAsync("1.0.0");
 Assert(checkedUpdate?.Version == "1.3.0", "OTA 检查应返回可安装的新版本", failures);
 
+var resolvedIpv4StunUrls = await WebRtcBrowserProbe.ResolveStunUrlsAsync(
+    new[] { "stun:stun.example:3478" },
+    (_, _) => Task.FromResult(new[] { IPAddress.Parse("203.0.113.7") }),
+    CancellationToken.None);
+Assert(resolvedIpv4StunUrls.SequenceEqual(new[] { "stun:203.0.113.7:3478" }),
+    "仅有 IPv4 解析结果时应使用同一 STUN 服务器的地址，避免浏览器对缺失地址族重复报 701", failures);
+
+var resolvedDualStackStunUrls = await WebRtcBrowserProbe.ResolveStunUrlsAsync(
+    new[] { "stun:stun.example:19302?transport=udp" },
+    (_, _) => Task.FromResult(new[] { IPAddress.Parse("203.0.113.7"), IPAddress.Parse("2001:db8::7") }),
+    CancellationToken.None);
+Assert(resolvedDualStackStunUrls.SequenceEqual(new[]
+    {
+        "stun:203.0.113.7:19302?transport=udp",
+        "stun:[2001:db8::7]:19302?transport=udp"
+    }),
+    "STUN 解析必须保留全部 IPv4 与 IPv6 地址以及端口和传输参数", failures);
+
+var unchangedStunUrls = new[]
+{
+    "stun:203.0.113.7:3478",
+    "stun:[2001:db8::7]:3478",
+    "stuns:secure.example:5349",
+    "turn:relay.example:3478"
+};
+var unchangedStunResults = await WebRtcBrowserProbe.ResolveStunUrlsAsync(
+    unchangedStunUrls,
+    (_, _) => throw new InvalidOperationException("不应重新解析地址字面量或改写安全 STUN/TURN 主机名"),
+    CancellationToken.None);
+Assert(unchangedStunResults.SequenceEqual(unchangedStunUrls),
+    "地址字面量与安全 STUN/TURN URL 必须保持不变", failures);
+
+var failedDnsStunUrls = await WebRtcBrowserProbe.ResolveStunUrlsAsync(
+    new[] { "stun:missing.example:3478" },
+    (_, _) => Task.FromException<IPAddress[]>(new System.Net.Sockets.SocketException()),
+    CancellationToken.None);
+Assert(failedDnsStunUrls.SequenceEqual(new[] { "stun:missing.example:3478" }),
+    "DNS 失败必须保留原始 STUN URL，让浏览器继续报告真实错误", failures);
+
+var emptyDnsStunUrls = await WebRtcBrowserProbe.ResolveStunUrlsAsync(
+    new[] { "stun:empty.example:3478" },
+    (_, _) => Task.FromResult(Array.Empty<IPAddress>()),
+    CancellationToken.None);
+Assert(emptyDnsStunUrls.SequenceEqual(new[] { "stun:empty.example:3478" }),
+    "DNS 无结果不能通过移除 STUN 服务伪装检测成功", failures);
+
+using (var cancelledStunResolution = new CancellationTokenSource())
+{
+    cancelledStunResolution.Cancel();
+    try
+    {
+        await WebRtcBrowserProbe.ResolveStunUrlsAsync(
+            new[] { "stun:stun.example:3478" },
+            (_, _) => Task.FromResult(Array.Empty<IPAddress>()),
+            cancelledStunResolution.Token);
+        failures.Add("STUN 地址解析必须响应取消");
+    }
+    catch (OperationCanceledException)
+    {
+    }
+}
+
 var inheritedProxy = Environment.GetEnvironmentVariable("HTTPS_PROXY");
 try
 {

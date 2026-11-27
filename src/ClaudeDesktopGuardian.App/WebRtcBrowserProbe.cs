@@ -1,4 +1,6 @@
 using System.IO;
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -50,13 +52,17 @@ public sealed class WebRtcBrowserProbe : IWebRtcBrowserProbe, IDisposable
                     "发布目录缺少本地 WebRTC 检测页面");
             }
 
+            var resolvedStunUrls = await ResolveStunUrlsAsync(
+                stunUrls,
+                (host, token) => Dns.GetHostAddressesAsync(host, token),
+                cancellationToken);
             var completion = new TaskCompletionSource<WebRtcBrowserResult>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             var requestId = Guid.NewGuid().ToString("N");
             _pendingResult = completion;
             _pendingRequestId = requestId;
             var encodedUrls = Uri.EscapeDataString(
-                JsonSerializer.Serialize(stunUrls));
+                JsonSerializer.Serialize(resolvedStunUrls));
             var pageUrl =
                 $"{new Uri(pagePath).AbsoluteUri}" +
                 $"?stunUrls={encodedUrls}&timeoutMs=4000&requestId={requestId}";
@@ -89,6 +95,60 @@ public sealed class WebRtcBrowserProbe : IWebRtcBrowserProbe, IDisposable
         {
             _probeLock.Release();
         }
+    }
+
+    internal static async Task<IReadOnlyList<string>> ResolveStunUrlsAsync(
+        IReadOnlyList<string> stunUrls,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolveHost,
+        CancellationToken cancellationToken)
+    {
+        var resolvedUrls = new List<string>();
+        foreach (var stunUrl in stunUrls)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!stunUrl.StartsWith("stun:", StringComparison.OrdinalIgnoreCase) ||
+                !Uri.TryCreate("stun://" + stunUrl[5..], UriKind.Absolute, out var endpoint) ||
+                !string.IsNullOrEmpty(endpoint.UserInfo) ||
+                !string.IsNullOrEmpty(endpoint.Fragment) ||
+                endpoint.AbsolutePath is not ("" or "/") ||
+                IPAddress.TryParse(endpoint.Host.Trim('[', ']'), out _))
+            {
+                resolvedUrls.Add(stunUrl);
+                continue;
+            }
+
+            IPAddress[] addresses;
+            try
+            {
+                addresses = await resolveHost(endpoint.Host, cancellationToken);
+            }
+            catch (SocketException)
+            {
+                resolvedUrls.Add(stunUrl);
+                continue;
+            }
+
+            var usableAddresses = addresses
+                .Where(address => address.AddressFamily is AddressFamily.InterNetwork or AddressFamily.InterNetworkV6)
+                .Distinct()
+                .ToArray();
+            if (usableAddresses.Length == 0)
+            {
+                resolvedUrls.Add(stunUrl);
+                continue;
+            }
+
+            var port = endpoint.Port < 0 ? string.Empty : $":{endpoint.Port}";
+            foreach (var address in usableAddresses)
+            {
+                var host = address.AddressFamily == AddressFamily.InterNetworkV6
+                    ? $"[{address}]"
+                    : address.ToString();
+                resolvedUrls.Add($"stun:{host}{port}{endpoint.Query}");
+            }
+        }
+
+        return resolvedUrls;
     }
 
     public void Dispose()
