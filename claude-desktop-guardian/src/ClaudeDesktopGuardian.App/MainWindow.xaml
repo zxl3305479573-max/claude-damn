@@ -28,8 +28,20 @@
                            Foreground="{StaticResource MutedBrush}"
                            FontSize="12.5"
                            Margin="0,4,0,0"/>
+                <TextBlock x:Name="UpdateStatusText"
+                           Text="正在检查更新…"
+                           Foreground="{StaticResource MutedBrush}"
+                           FontSize="11.5"
+                           Margin="0,4,0,0"/>
             </StackPanel>
             <StackPanel DockPanel.Dock="Right" Orientation="Horizontal" VerticalAlignment="Center">
+                <Button x:Name="UpdateButton"
+                        Content="检查更新"
+                        Style="{StaticResource SecondaryButtonStyle}"
+                        Click="UpdateButton_Click"
+                        Padding="14,7"
+                        Margin="0,0,10,0"
+                        ToolTip="检查并安全安装 GitHub 上的 Guardian 更新"/>
                 <Border x:Name="WfpBadgeBorder"
                         Background="{StaticResource StatusUnknownBackgroundBrush}"
                         BorderBrush="{StaticResource LineBrush}"

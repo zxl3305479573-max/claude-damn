@@ -34,7 +34,10 @@ if (Get-Command node -ErrorAction SilentlyContinue) {
     }
 }
 
-foreach ($psScript in @((Join-Path $root 'build.ps1'), (Join-Path $root 'install.ps1'))) {
+foreach ($psScript in @(
+    (Join-Path $root 'build.ps1'),
+    (Join-Path $root 'install.ps1'),
+    (Join-Path $root 'apply-update.ps1'))) {
     $rawBytes = [System.IO.File]::ReadAllBytes($psScript)
     if ($rawBytes.Length -lt 3 -or $rawBytes[0] -ne 0xEF -or $rawBytes[1] -ne 0xBB -or $rawBytes[2] -ne 0xBF) {
         throw "PowerShell 脚本缺少 UTF-8 BOM：$psScript"
@@ -83,10 +86,13 @@ if ($LASTEXITCODE -ne 0) {
     throw "界面发布失败，退出码 $LASTEXITCODE"
 }
 
+Copy-Item -LiteralPath (Join-Path $root 'apply-update.ps1') -Destination $publish
+
 foreach ($rel in @(
     'ClaudeDesktopGuardian.App.exe',
     'ClaudeDesktopGuardian.Helper.exe',
     'ClaudeDesktopGuardian.Cli.exe',
+    'apply-update.ps1',
     'Microsoft.Web.WebView2.Wpf.dll',
     'Microsoft.Web.WebView2.Core.dll',
     'WebView2Loader.dll',

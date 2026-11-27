@@ -1,0 +1,58 @@
+name: Claude Desktop Guardian CI
+
+on:
+  pull_request:
+    paths:
+      - "claude-desktop-guardian/**"
+      - ".github/workflows/guardian-ci.yml"
+  push:
+    branches: [main]
+    paths:
+      - "claude-desktop-guardian/**"
+      - ".github/workflows/guardian-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: guardian-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: Build and test Guardian
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Core regression tests
+        run: dotnet run --project claude-desktop-guardian/tests/ClaudeDesktopGuardian.Tests.csproj -c Release
+
+      - name: Build app, helper, and CLI
+        run: |
+          dotnet build claude-desktop-guardian/src/ClaudeDesktopGuardian.App/ClaudeDesktopGuardian.App.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build claude-desktop-guardian/src/ClaudeDesktopGuardian.Helper/ClaudeDesktopGuardian.Helper.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build claude-desktop-guardian/src/ClaudeDesktopGuardian.Cli/ClaudeDesktopGuardian.Cli.csproj -c Release
+          exit $LASTEXITCODE
+        shell: pwsh
+
+      - name: Validate OTA updater script
+        shell: pwsh
+        run: |
+          $path = 'claude-desktop-guardian/apply-update.ps1'
+          $bytes = [IO.File]::ReadAllBytes($path)
+          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+            throw 'OTA updater must be UTF-8 with BOM.'
+          }
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) { throw $errors[0].Message }

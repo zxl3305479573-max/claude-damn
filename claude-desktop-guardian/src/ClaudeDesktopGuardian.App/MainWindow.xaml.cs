@@ -24,6 +24,8 @@ public partial class MainWindow : Window
     private readonly GuardianLogger _logger = new();
     private readonly AccountSlotManager _accountManager = new();
     private readonly ClashInspector _clashInspector = new();
+    private readonly GuardianUpdateService _updateService = new();
+    private readonly TaskCompletionSource<bool> _closedSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly Dictionary<string, WpfCheckBox> _optionalCheckBoxes = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Windows.Threading.DispatcherTimer _timer;
     private readonly NotifyIcon _trayIcon;
@@ -41,9 +43,12 @@ public partial class MainWindow : Window
     private bool _exiting;
     private bool _operationInProgress;
     private bool _timezoneRecoveryReady;
+    private bool _updateCheckInProgress;
+    private bool _updateInstallInProgress;
     private string _timezoneOperationError = string.Empty;
     private string? _selectedCheckId;
     private DateTimeOffset _lastFullCheck = DateTimeOffset.MinValue;
+    private GuardianUpdate? _availableUpdate;
 
     public MainWindow()
     {
@@ -105,6 +110,7 @@ public partial class MainWindow : Window
         };
         Closed += (_, _) =>
         {
+            _closedSignal.TrySetResult(true);
             _timer?.Stop();
             _compactWindow?.Close();
             _processMonitor.Dispose();
@@ -154,6 +160,11 @@ public partial class MainWindow : Window
             {
                 ShowCompactWindow();
             }
+
+            if (!_exiting && !_allowExit)
+            {
+                _ = CheckForUpdatesAsync(false);
+            }
         };
     }
 
@@ -185,6 +196,7 @@ public partial class MainWindow : Window
         var buttons = new WpfButton[]
         {
             CheckButton,
+            UpdateButton,
             RecoverButton,
             BtnEnableWfpQuick,
             BtnDisableWfpQuick,

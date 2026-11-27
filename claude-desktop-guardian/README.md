@@ -1,6 +1,6 @@
 # Claude Desktop Guardian
 
-Windows 上的 Claude Desktop 网络守护与多账号安全工作台（.NET 8 / WPF 原生实现，完整融合 Windows 版 `claude-switcher` 与 `Claude Desktop Guardian` 能力；按设计不包含 GitHub 自动更新检查）。
+Windows 上的 Claude Desktop 网络守护与多账号安全工作台（.NET 8 / WPF 原生实现，完整融合 Windows 版 `claude-switcher` 与 `Claude Desktop Guardian` 能力，支持 GitHub Release OTA 更新）。
 
 ## 核心能力
 
@@ -60,6 +60,10 @@ node --check src\ClaudeDesktopGuardian.App\web\webrtc\leak-check.js
 ```
 
 测试包含独立 STA / WPF Dispatcher 回归：完整、轻量与单项检查执行期间仍能处理界面操作，WebView2 探测仍在界面线程；Clash 运行态 TUN 诊断使用随机本机测试管道验证开启、关闭、无响应超时和主动取消，不访问真实代理或修改系统设置。
+
+### 自动更新
+
+Guardian 启动后会只读检查 GitHub 正式 Release，也可以在窗口点「检查更新」。安装更新前会下载共享运行目录压缩包、核对 Release 的 SHA-256，并请求管理员确认；确认后先恢复时区与网络策略，再替换程序文件。更新失败会自动还原，旧程序目录作为 `.rollback.<事务号>` 保留；账号存档、配置与运行状态位于用户数据目录，不随 OTA 替换。发布使用 `guardian-vMAJOR.MINOR.PATCH` 标签触发 `.github/workflows/guardian-release.yml`，CI 生成包含 App、Helper、CLI、共享运行时与更新器的 Windows x64 zip 和 SHA-256 清单。
 
 若旧版卡在检查且重复打开仍无响应，单实例机制会继续唤起同一个旧进程。更新时需先结束旧实例，再启动修复版本；仅打开另一个目录的 EXE 不会切换到新版本。维护者部署前保留原安装目录的备份，需要回滚时退出新版并还原备份；本次修复不迁移账号或配置格式。
 

@@ -1,0 +1,87 @@
+name: Claude Desktop Guardian Release
+
+on:
+  push:
+    tags:
+      - "guardian-v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: guardian-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish Windows OTA package
+    runs-on: windows-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Resolve version
+        shell: pwsh
+        run: |
+          $version = $env:GITHUB_REF_NAME -replace '^guardian-v', ''
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'Tag must match guardian-vMAJOR.MINOR.PATCH.'
+          }
+          "VERSION=$version" >> $env:GITHUB_ENV
+
+      - name: Test and publish shared runtime package
+        shell: pwsh
+        run: |
+          dotnet run --project claude-desktop-guardian/tests/ClaudeDesktopGuardian.Tests.csproj -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $packageRoot = Join-Path $env:RUNNER_TEMP "ClaudeDesktopGuardian-$env:VERSION"
+          New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+          dotnet publish claude-desktop-guardian/src/ClaudeDesktopGuardian.Helper/ClaudeDesktopGuardian.Helper.csproj `
+            -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
+            "-p:Version=$env:VERSION" -o $packageRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish claude-desktop-guardian/src/ClaudeDesktopGuardian.Cli/ClaudeDesktopGuardian.Cli.csproj `
+            -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
+            "-p:Version=$env:VERSION" -o $packageRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet publish claude-desktop-guardian/src/ClaudeDesktopGuardian.App/ClaudeDesktopGuardian.App.csproj `
+            -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
+            "-p:Version=$env:VERSION" -o $packageRoot
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Copy-Item -LiteralPath claude-desktop-guardian/apply-update.ps1 -Destination $packageRoot
+          Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $env:VERSION -Encoding ascii
+          $app = Join-Path $packageRoot 'ClaudeDesktopGuardian.App.exe'
+          $helper = Join-Path $packageRoot 'ClaudeDesktopGuardian.Helper.exe'
+          $cli = Join-Path $packageRoot 'ClaudeDesktopGuardian.Cli.exe'
+          if (-not (Test-Path $app) -or -not (Test-Path $helper) -or -not (Test-Path $cli)) {
+            throw 'The shared-runtime package is missing an executable.'
+          }
+          $packagePath = Join-Path $env:RUNNER_TEMP "ClaudeDesktopGuardian-$env:VERSION-windows-x64.zip"
+          Compress-Archive -Path (Join-Path $packageRoot '*') -DestinationPath $packagePath -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $packagePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          Set-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'SHA256SUMS-release.txt') `
+            -Value "$hash  $(Split-Path -Leaf $packagePath)" -Encoding ascii
+
+      - name: Publish GitHub Release
+        shell: pwsh
+        run: |
+          $tag = $env:GITHUB_REF_NAME
+          $package = Join-Path $env:RUNNER_TEMP "ClaudeDesktopGuardian-$env:VERSION-windows-x64.zip"
+          $checksums = Join-Path $env:RUNNER_TEMP 'SHA256SUMS-release.txt'
+          gh release view $tag --repo $env:GH_REPO *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag $package $checksums --repo $env:GH_REPO --clobber
+          }
+          else {
+            gh release create $tag $package $checksums --repo $env:GH_REPO `
+              --generate-notes --title "Claude Desktop Guardian v$env:VERSION"
+          }
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

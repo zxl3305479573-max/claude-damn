@@ -14,6 +14,47 @@ using ClaudeDesktopGuardian.Helper;
 
 var failures = new List<string>();
 
+var releaseMetadata = """
+[
+  {
+    "tag_name": "guardian-v1.3.0",
+    "draft": false,
+    "prerelease": false,
+    "html_url": "https://github.com/zxl3305479573-max/claude-damn/releases/tag/guardian-v1.3.0",
+    "assets": [
+      { "name": "ClaudeDesktopGuardian-1.3.0-windows-x64.zip", "browser_download_url": "https://github.com/zxl3305479573-max/claude-damn/releases/download/guardian-v1.3.0/ClaudeDesktopGuardian-1.3.0-windows-x64.zip" },
+      { "name": "SHA256SUMS-release.txt", "browser_download_url": "https://github.com/zxl3305479573-max/claude-damn/releases/download/guardian-v1.3.0/SHA256SUMS-release.txt" }
+    ]
+  },
+  {
+    "tag_name": "guardian-v9.0.0-rc.1",
+    "draft": false,
+    "prerelease": true,
+    "html_url": "https://github.com/zxl3305479573-max/claude-damn/releases/tag/guardian-v9.0.0-rc.1",
+    "assets": []
+  }
+]
+""";
+var selectedUpdate = GuardianUpdateService.SelectUpdate(releaseMetadata, new Version(1, 0, 0));
+Assert(selectedUpdate?.Version == "1.3.0", "OTA 应选择高于已安装版本的正式 Guardian Release", failures);
+Assert(selectedUpdate?.PackageName == "ClaudeDesktopGuardian-1.3.0-windows-x64.zip",
+    "OTA 应选择共享运行时 Windows x64 更新包", failures);
+Assert(GuardianUpdateService.ParseChecksum(
+        $"{new string('a', 64)}  ClaudeDesktopGuardian-1.3.0-windows-x64.zip\n",
+        "ClaudeDesktopGuardian-1.3.0-windows-x64.zip") == new string('A', 64),
+    "OTA 应按资产名解析并规范化 SHA-256", failures);
+
+var releaseApiHandler = new MockHttpHandler(request =>
+{
+    Assert(request.RequestUri?.AbsoluteUri ==
+           "https://api.github.com/repos/zxl3305479573-max/claude-damn/releases?per_page=100",
+        "OTA 应从配置的 GitHub 仓库读取 Release", failures);
+    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(releaseMetadata) };
+});
+var releaseApiService = new GuardianUpdateService(new HttpClient(releaseApiHandler));
+var checkedUpdate = await releaseApiService.CheckAsync("1.0.0");
+Assert(checkedUpdate?.Version == "1.3.0", "OTA 检查应返回可安装的新版本", failures);
+
 var inheritedProxy = Environment.GetEnvironmentVariable("HTTPS_PROXY");
 try
 {
