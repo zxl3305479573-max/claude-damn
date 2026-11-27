@@ -9,7 +9,9 @@ public sealed class GuardianCliContext
     public GuardianStateStore StateStore { get; init; } = new();
     public AccountSlotManager AccountManager { get; init; } = new();
     public GuardianLogger Logger { get; init; } = new();
-    public IEnvironmentProbe Probe { get; init; } = new WindowsEnvironmentProbe();
+    public IEnvironmentProbe Probe { get; init; } = new WindowsEnvironmentProbe(helperStatusProvider: GuardianHelperClient.QueryStatusAsync);
+    public Func<string, CancellationToken, Task<JsonElement>> SendHelper { get; init; } =
+        (command, token) => GuardianHelperClient.SendAsync(command, token);
     public IProcessInspector ProcessInspector { get; init; } = new WindowsProcessInspector();
     public ClashInspector ClashInspector { get; init; } = new();
     public TextWriter Out { get; init; } = Console.Out;
@@ -316,6 +318,7 @@ public static class GuardianCliRunner
                         ["logging"] = config.LoggingEnabled,
                         ["wfpStrictEnabled"] = config.WfpStrictEnabled,
                         ["wfpAllowLoopback"] = config.WfpAllowLoopback,
+                        ["tcpOnlyEnabled"] = config.TcpOnlyEnabled,
                         ["ipReputation"] = config.IpReputation is null
                             ? null
                             : new
@@ -340,7 +343,24 @@ public static class GuardianCliRunner
 
                     var updated = ApplyCheckConfigPatch(config, args[1]);
                     ctx.ConfigStore.Save(updated, preserveExistingApiKeyIfEmpty: true);
+                    if (updated.TcpOnlyEnabled != config.TcpOnlyEnabled)
+                    {
+                        var response = await ctx.SendHelper(updated.TcpOnlyEnabled ? "tcp-only-enable" : "tcp-only-disable", cancellationToken);
+                        if (!response.TryGetProperty("ok", out var applied) || !applied.GetBoolean())
+                            throw new InvalidOperationException("设置已保存，但 TCP-only 策略未确认生效/清理；请启动助手并显式修复");
+                    }
                     ctx.Out.WriteLine("OK:检查设置已保存");
+                    break;
+                }
+                case "tcp-only-enable":
+                case "tcp-only-status":
+                case "tcp-only-disable":
+                {
+                    if (command != "tcp-only-status")
+                        ctx.ConfigStore.Save(config with { TcpOnlyEnabled = command == "tcp-only-enable" });
+                    var response = await ctx.SendHelper(command, cancellationToken);
+                    ctx.Out.WriteLine(response.GetRawText());
+                    exitCode = response.TryGetProperty("ok", out var success) && success.GetBoolean() ? 0 : 1;
                     break;
                 }
                 case "export-diagnostics":
@@ -429,6 +449,13 @@ public static class GuardianCliRunner
         var root = doc.RootElement;
         var updated = current;
 
+        if (root.TryGetProperty("tcpOnlyEnabled", out var tcpOnly))
+        {
+            if (tcpOnly.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new ArgumentException("tcpOnlyEnabled 必须为布尔值");
+            updated = updated with { TcpOnlyEnabled = tcpOnly.GetBoolean() };
+        }
+
         if (root.TryGetProperty("disabled", out var disabledProp) && disabledProp.ValueKind == JsonValueKind.Array)
         {
             var list = disabledProp.EnumerateArray()
@@ -495,6 +522,7 @@ public static class GuardianCliRunner
         sb.AppendLine("  snapshot-export <A|B|C|D> <file.csnap>   (密码经 stdin 传入)");
         sb.AppendLine("  snapshot-import <file.csnap> <A|B|C|D>   (密码经 stdin 传入)");
         sb.AppendLine("  get-check-config | set-check-config '<json>' | export-diagnostics <file.zip>");
+        sb.AppendLine("  tcp-only-enable | tcp-only-status | tcp-only-disable");
         writer.Write(sb.ToString());
     }
 }

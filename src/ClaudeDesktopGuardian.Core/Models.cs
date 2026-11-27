@@ -91,6 +91,7 @@ public static class GuardianCheckIds
     public const string HelperService = "helper-service";
     public const string WfpPolicy = "wfp-policy";
     public const string FirewallReadiness = "firewall-readiness";
+    public const string TcpOnlyPolicy = "tcp-only-policy";
     public const string ClashRules = "clash-rules";
     public const string ClientLanguage = "client-language";
     public const string Asn = "asn";
@@ -153,7 +154,9 @@ public sealed record CheckResult(
     CheckStatus Status,
     bool Blocking,
     string Detail,
-    IReadOnlyDictionary<string, string> Evidence)
+    IReadOnlyDictionary<string, string> Evidence,
+    DateTimeOffset? ObservedAt = null,
+    bool IsCached = false)
 {
     public bool Passed =>
         Status == CheckStatus.Ok ||
@@ -232,6 +235,21 @@ public sealed record IpReputationRecord(
     bool? IsHosting = null,
     double? BlacklistCount = null);
 
+public sealed record CollectionObservation(
+    bool Succeeded,
+    DateTimeOffset ObservedAt,
+    string Error = "",
+    bool IsCached = false);
+
+public sealed record TransportEndpoint(int ProcessId, string Protocol, string LocalAddress, int LocalPort,
+    string RemoteAddress = "", int RemotePort = 0);
+
+public sealed record DestinationRoute(string Destination, int InterfaceIndex, int ExpectedInterfaceIndex,
+    bool Succeeded, string Error = "")
+{
+    public bool Matches => Succeeded && InterfaceIndex > 0 && InterfaceIndex == ExpectedInterfaceIndex;
+}
+
 public sealed record NetworkSnapshot(
     string AdapterName,
     string AdapterDescription,
@@ -292,7 +310,16 @@ public sealed record NetworkSnapshot(
     string TunDirectExitCountry = "",
     string TunDirectProbeDetail = "",
     long LastCycleDurationMs = 0,
-    bool LastCycleTimedOut = false);
+    bool LastCycleTimedOut = false,
+    IReadOnlyDictionary<string, CollectionObservation>? Observations = null,
+    IReadOnlyList<TransportEndpoint>? UdpEndpoints = null,
+    IReadOnlyList<DestinationRoute>? DestinationRoutes = null,
+    string NetworkContext = "",
+    DateTimeOffset? CapturedAt = null,
+    bool ContextChanged = false,
+    bool? FirewallPolicyEffective = null,
+    string? TcpOnlyState = null,
+    string TcpOnlyDetail = "");
 
 public sealed record LaunchGateDecision(
     bool Allowed,
@@ -306,7 +333,10 @@ public sealed record HelperStatusSnapshot(
     string? WfpDetail,
     bool FirewallApiOk,
     int FirewallActiveRuleCount,
-    string FirewallDetail);
+    string FirewallDetail,
+    bool? FirewallPolicyEffective = null,
+    string? TcpOnlyState = null,
+    string TcpOnlyDetail = "");
 
 public sealed record GuardianReport(
     DateTimeOffset ObservedAt,
@@ -367,7 +397,8 @@ public sealed record GuardianConfig(
     bool LoggingEnabled = true,
     IReadOnlyList<string>? DisabledOptionalChecks = null,
     IpReputationConfig? IpReputation = null,
-    string WebRtcPolicy = WebRtcPolicies.Proxy)
+    string WebRtcPolicy = WebRtcPolicies.Proxy,
+    bool TcpOnlyEnabled = false)
 {
     [JsonIgnore]
     public IReadOnlyList<string> EffectiveClaudeDomains =>

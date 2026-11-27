@@ -23,6 +23,7 @@ public partial class MainWindow
             if (ready)
             {
                 _timezoneRecoveryReady = await RestoreStaleTimezoneAsync();
+                await ApplySavedTcpOnlyAsync();
                 AppendToolOutput("[通过] 管理员助手受限命名管道已连接就绪。");
                 _logger.LogAction("reconnect-helper", "ok", 0, enabled: _config.LoggingEnabled);
                 await RunCheckAsync(false);
@@ -253,9 +254,13 @@ public partial class MainWindow
                     ? $"[通过] IPv6 旁路治理：{ipv6Res.Detail}"
                     : $"[警告] IPv6 旁路治理失败：{ipv6Res.Detail}");
             }
-            else
+            else if (report?.Network.Observations?.GetValueOrDefault(GuardianCheckIds.Ipv6)?.Succeeded == true)
             {
                 log.AppendLine("[通过] 非 VPN 网卡未发现公网/NAT64 IPv6 路由，无需修改网卡绑定");
+            }
+            else
+            {
+                log.AppendLine("[未验证] IPv6 路由采集失败，未修改网卡绑定，等待重新采集");
             }
 
             if (Directory.Exists(ClashInspector.FindClashVergeDir()))
@@ -278,6 +283,12 @@ public partial class MainWindow
                     : $"[警告] WFP 规则刷新失败：{wfpRes.Detail}");
             }
 
+            if (_config.TcpOnlyEnabled)
+            {
+                var tcpOnly = await SendHelperAsync("tcp-only-enable", null);
+                log.AppendLine(tcpOnly.Success ? "[通过] TCP-only 托管规则已刷新并验证旧会话退出"
+                    : "[警告] TCP-only 刷新未确认：" + tcpOnly.Detail);
+            }
             log.AppendLine("正在执行修复后完整复检…");
             ToolOutputTextBox.Text = log.ToString();
             var fresh = await RunCheckAsync(true);

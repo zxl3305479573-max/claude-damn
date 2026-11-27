@@ -540,6 +540,8 @@
                                         <CheckBox x:Name="WfpStrictCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="启用 WFP 内核级 TUN-only 出站锁（严格模式）" Margin="0,0,0,8"
                                                   ToolTip="开启后与防火墙急停双层协同：未生效时将被视为阻断异常；保存设置时自动尝试应用"/>
                                         <CheckBox x:Name="WfpLoopbackCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="WFP 允许本机回环通信（127.0.0.1 / ::1，供本地 MCP/代理）" Margin="0,0,0,8"/>
+                                        <CheckBox x:Name="TcpOnlyCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="Claude TCP-only：阻断 Claude 全部出站 UDP（默认关闭）" Margin="0,0,0,8"
+                                                  ToolTip="独立于 WFP；启用时关闭既有 Claude 会话并验证规则。可能影响通话/实时功能；不阻断代理内核。开启后缺少生效证据会阻止启动。"/>
                                         <CheckBox x:Name="AllowOptionalFailuresCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="非关键检查失败降级为警告（核心硬检查永不降级）" Margin="0,0,0,8"/>
                                         <CheckBox x:Name="LoggingEnabledCheckBox" Style="{StaticResource GuardianCheckBoxStyle}" Content="启用脱敏运行日志（logs\guardian.log，512 KiB 自动轮转）"/>
                                     </StackPanel>

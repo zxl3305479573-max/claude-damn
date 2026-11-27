@@ -15,7 +15,10 @@ internal sealed record HelperCallResult(
     bool? FirewallApiOk = null,
     int? FirewallActiveRuleCount = null,
     string? FirewallDetail = null,
-    string? HelperDetail = null);
+    string? HelperDetail = null,
+    bool? FirewallPolicyEffective = null,
+    string? TcpOnlyState = null,
+    string? TcpOnlyDetail = null);
 
 /// <summary>
 /// Isolated named-pipe client for ClaudeDesktopGuardian.Helper with explicit connect/read/write
@@ -208,6 +211,10 @@ internal static class HelperPipeClient
                 : null;
             var fwDetail = root.TryGetProperty("firewallDetail", out var fwDetProp) ? fwDetProp.GetString() : null;
             var helperDetail = root.TryGetProperty("helperDetail", out var hDetProp) ? hDetProp.GetString() : null;
+            bool? effective = root.TryGetProperty("firewallPolicyEffective", out var effectiveProp) &&
+                effectiveProp.ValueKind is JsonValueKind.True or JsonValueKind.False ? effectiveProp.GetBoolean() : null;
+            var tcpState = root.TryGetProperty("tcpOnlyState", out var tcpProp) ? tcpProp.GetString() : null;
+            var tcpDetail = root.TryGetProperty("tcpOnlyDetail", out var tcpDetailProp) ? tcpDetailProp.GetString() : null;
             var detail = success
                 ? root.TryGetProperty("detail", out var detProp) && !string.IsNullOrWhiteSpace(detProp.GetString())
                     ? detProp.GetString()!
@@ -218,7 +225,8 @@ internal static class HelperPipeClient
                     ? error.GetString() ?? "管理员助手拒绝命令"
                     : "管理员助手拒绝命令";
 
-            return new HelperCallResult(success, detail, wfpState, wfpDetail, fwApiOk, fwCount, fwDetail, helperDetail);
+            return new HelperCallResult(success, detail, wfpState, wfpDetail, fwApiOk, fwCount, fwDetail, helperDetail,
+                effective, tcpState, tcpDetail);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {

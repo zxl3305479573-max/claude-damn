@@ -164,9 +164,11 @@ public sealed class GuardianCheckEngine
         var network = await Task.Run(
             () => _probe.CaptureNetworkAsync(config, processes, full, cancellationToken), cancellationToken);
 
-        var runBrowserWebRtc = full &&
+        if (network.ContextChanged) _lastBrowserWebRtc = null;
+        var runBrowserWebRtc = (full || network.ContextChanged) &&
                                _browserProbe is not null &&
                                !network.ProxyPathSkipped &&
+                               CanProbeBrowser(network) &&
                                !config.IsCheckDisabled(GuardianCheckIds.WebRtc);
         if (runBrowserWebRtc)
         {
@@ -176,17 +178,18 @@ public sealed class GuardianCheckEngine
             _lastBrowserWebRtc = browserWebRtc;
             network = network with { BrowserWebRtc = browserWebRtc };
         }
-        else if (!full && _lastBrowserWebRtc is not null && !network.ProxyPathSkipped)
+        else if (!full && !network.ContextChanged && _lastBrowserWebRtc is not null && !network.ProxyPathSkipped && CanProbeBrowser(network))
         {
             network = network with { BrowserWebRtc = _lastBrowserWebRtc };
         }
 
-        if (full)
+        cancellationToken.ThrowIfCancellationRequested();
+        if (full || network.ContextChanged)
         {
             _hasCompletedFullCheck = true;
         }
 
-        var includeFullChecks = full || _hasCompletedFullCheck;
+        var includeFullChecks = full || network.ContextChanged || _hasCompletedFullCheck;
         var checks = EvaluateAllChecks(config, network, processes, includeFullChecks);
         return new GuardianReport(_clock.UtcNow, checks, network, processes);
     }
@@ -218,9 +221,11 @@ public sealed class GuardianCheckEngine
                 () => _probe.CaptureNetworkAsync(config, processes, full: true, cancellationToken), cancellationToken);
         }
 
-        if (string.Equals(checkId, GuardianCheckIds.WebRtc, StringComparison.OrdinalIgnoreCase) &&
+        if (network.ContextChanged) _lastBrowserWebRtc = null;
+        if ((network.ContextChanged || string.Equals(checkId, GuardianCheckIds.WebRtc, StringComparison.OrdinalIgnoreCase)) &&
             _browserProbe is not null &&
             !network.ProxyPathSkipped &&
+            CanProbeBrowser(network) &&
             !config.IsCheckDisabled(GuardianCheckIds.WebRtc))
         {
             var browserWebRtc = await _browserProbe.ProbeAsync(
@@ -229,30 +234,14 @@ public sealed class GuardianCheckEngine
             _lastBrowserWebRtc = browserWebRtc;
             network = network with { BrowserWebRtc = browserWebRtc };
         }
-        else if (previousReport.Network.BrowserWebRtc is not null && network.BrowserWebRtc is null)
+        else if (!network.ContextChanged && CanProbeBrowser(network) && previousReport.Network.BrowserWebRtc is not null && network.BrowserWebRtc is null)
         {
             network = network with { BrowserWebRtc = previousReport.Network.BrowserWebRtc };
         }
 
         var evaluated = EvaluateAllChecks(config, network, processes, includeFullChecks: true);
-        var updatedCheck = evaluated.FirstOrDefault(c =>
-            string.Equals(c.Id, checkId, StringComparison.OrdinalIgnoreCase));
-        if (updatedCheck is null)
-        {
-            return new GuardianReport(_clock.UtcNow, evaluated, network, processes);
-        }
-
-        var merged = previousReport.Checks
-            .Select(existing => string.Equals(existing.Id, checkId, StringComparison.OrdinalIgnoreCase)
-                ? updatedCheck
-                : existing)
-            .ToList();
-        if (!merged.Any(c => string.Equals(c.Id, checkId, StringComparison.OrdinalIgnoreCase)))
-        {
-            merged.Add(updatedCheck);
-        }
-
-        return new GuardianReport(_clock.UtcNow, merged, network, processes);
+        cancellationToken.ThrowIfCancellationRequested();
+        return new GuardianReport(_clock.UtcNow, evaluated, network, processes);
     }
 
     private List<CheckResult> EvaluateAllChecks(
@@ -298,23 +287,20 @@ public sealed class GuardianCheckEngine
                   (network.AdapterIsFakeIp ? "（198.18 Fake-IP）" : string.Empty)));
 
         // 4. Default Route (critical)
-        var routeStatus = string.IsNullOrWhiteSpace(network.AdapterName)
+        var routes = network.DestinationRoutes ?? Array.Empty<DestinationRoute>();
+        var routeStatus = string.IsNullOrWhiteSpace(network.AdapterName) || routes.Any(route => route.Succeeded && !route.Matches)
             ? CheckStatus.Fail
-            : !string.IsNullOrWhiteSpace(network.Gateway) || network.AdapterHasDefaultRoute
-                ? CheckStatus.Ok
-                : CheckStatus.Unknown;
+            : Collected(network, GuardianCheckIds.DefaultRoute) && routes.Count > 0 && routes.All(route => route.Matches)
+                ? CheckStatus.Ok : CheckStatus.Unknown;
         checks.Add(Result(
             GuardianCheckIds.DefaultRoute,
-            "默认路由",
+            "目标最佳路由",
             routeStatus,
             blocking: true,
             routeStatus == CheckStatus.Ok
-                ? string.IsNullOrWhiteSpace(network.Gateway)
-                    ? "TUN 网卡已接管 IPv4 默认路由 (0.0.0.0/0)"
-                    : $"网关 {network.Gateway}" + (network.AdapterHasDefaultRoute ? "（已接管默认路由）" : string.Empty)
-                : string.IsNullOrWhiteSpace(network.AdapterName)
-                    ? "VPN 网卡未在线，缺少 TUN 默认路由"
-                    : "VPN 网卡没有可用 IPv4 网关或默认路由"));
+                ? "已查询具体目标最佳路由，均经当前 TUN（含拆分默认路由与更具体路由）"
+                : routeStatus == CheckStatus.Fail ? "TUN 未在线或存在具体目标经其他接口出站"
+                    : "具体目标最佳路由采集失败或尚未验证"));
 
         // 5. Egress IP (critical, including System Proxy vs TUN divergence detection)
         checks.Add(EvaluateEgressIp(config, network));
@@ -348,6 +334,7 @@ public sealed class GuardianCheckEngine
 
         // 15. Firewall Readiness (real helper + firewall rule state)
         checks.Add(EvaluateFirewallReadiness(network));
+        checks.Add(EvaluateTcpOnly(config, network));
 
         if (includeFullChecks)
         {
@@ -456,6 +443,9 @@ public sealed class GuardianCheckEngine
 
     private static CheckResult EvaluateActiveConnections(GuardianConfig config, NetworkSnapshot network)
     {
+        if (!Collected(network, GuardianCheckIds.ActiveConnections))
+            return Result(GuardianCheckIds.ActiveConnections, "活动连接", CheckStatus.Unknown, true,
+                "连接/UDP 端点采集失败或尚未完成，不能把空列表视为无连接");
         if (network.ActiveConnections.Count == 0)
         {
             return Result(
@@ -463,7 +453,7 @@ public sealed class GuardianCheckEngine
                 "活动连接",
                 CheckStatus.Ok,
                 blocking: false,
-                "当前无受保护进程的已建立 TCP 连接");
+                $"当前无受保护进程的已建立 TCP 连接；UDP 绑定端点 {network.UdpEndpoints?.Count ?? 0} 个（不证明已经发送）");
         }
 
         var unexpected = new List<string>();
@@ -478,7 +468,7 @@ public sealed class GuardianCheckEngine
 
             if (!TrySplitEndpoint(endpoint, out var host, out var port))
             {
-                continue;
+                return Result(GuardianCheckIds.ActiveConnections, "活动连接", CheckStatus.Unknown, true, "连接端点格式无效");
             }
 
             if (IsLoopbackHost(host) || port == 443)
@@ -555,6 +545,11 @@ public sealed class GuardianCheckEngine
                     : network.FirewallDetail);
         }
 
+        if (network.FirewallPolicyEffective != true)
+            return Result(GuardianCheckIds.FirewallReadiness, "防火墙保护",
+                network.FirewallPolicyEffective == false ? CheckStatus.Fail : CheckStatus.Unknown, true,
+                "防火墙服务、活动配置或本地策略未生效/无法核验；" + network.FirewallDetail);
+
         var detail = !string.IsNullOrWhiteSpace(network.FirewallDetail)
             ? network.FirewallDetail
             : network.FirewallActiveRuleCount > 0
@@ -567,6 +562,26 @@ public sealed class GuardianCheckEngine
             blocking: false,
             detail);
     }
+
+    private static CheckResult EvaluateTcpOnly(GuardianConfig config, NetworkSnapshot network)
+    {
+        if (!config.TcpOnlyEnabled)
+            return Result(GuardianCheckIds.TcpOnlyPolicy, "Claude TCP-only", CheckStatus.Skip, false, "独立出站 UDP 阻断未启用（默认关闭）");
+        var status = network.TcpOnlyState switch
+        {
+            "active" when network.FirewallPolicyEffective == true => CheckStatus.Ok,
+            "off" or "stale" or "invalid" => CheckStatus.Fail,
+            _ => CheckStatus.Unknown
+        };
+        return Result(GuardianCheckIds.TcpOnlyPolicy, "Claude TCP-only", status, true,
+            string.IsNullOrWhiteSpace(network.TcpOnlyDetail) ? "未取得完整 TCP-only 生效证据，需要新版管理员助手" : network.TcpOnlyDetail);
+    }
+
+    private static bool Collected(NetworkSnapshot network, string id) =>
+        network.Observations?.TryGetValue(id, out var observation) == true && observation.Succeeded;
+
+    private static bool CanProbeBrowser(NetworkSnapshot network) => Collected(network, GuardianCheckIds.DefaultRoute) &&
+        network.DestinationRoutes is { Count: > 0 } && network.DestinationRoutes.All(route => route.Matches);
 
     private static bool TrySplitEndpoint(string endpoint, out string host, out int port)
     {
@@ -697,7 +712,8 @@ public sealed class GuardianCheckEngine
         }
 
         // If real DNS resolution was captured, validate Fake-IP tunnel on Fake-IP adapters
-        if (network.ResolvedClaudeIps is { Count: > 0 })
+        if (Collected(network, GuardianCheckIds.Dns) && network.ResolvedClaudeIps is { Count: > 0 } &&
+            network.ResolvedClaudeIps.All(ip => IPAddress.TryParse(ip, out _)))
         {
             var allFakeIp = network.ResolvedClaudeIps.All(ip => ip.StartsWith("198.18.", StringComparison.Ordinal));
             if (network.AdapterIsFakeIp && !allFakeIp)
@@ -727,7 +743,7 @@ public sealed class GuardianCheckEngine
                 config,
                 GuardianCheckIds.Dns,
                 "DNS",
-                CheckStatus.Fail,
+                CheckStatus.Unknown,
                 blockingWhenFail: true,
                 $"DNS {string.Join(", ", network.DnsServers)}；{network.DnsProbeDetail}");
         }
@@ -735,9 +751,9 @@ public sealed class GuardianCheckEngine
         return Result(
             GuardianCheckIds.Dns,
             "DNS",
-            CheckStatus.Ok,
+            CheckStatus.Unknown,
             blocking: true,
-            $"DNS {string.Join(", ", network.DnsServers)}");
+            "未取得有效 DNS 解析结果；本项仅验证解析与 Fake-IP 特征，不证明完整 DNS 防泄漏");
     }
 
     private static CheckResult EvaluateIpv6(GuardianConfig config, NetworkSnapshot network)
@@ -752,6 +768,10 @@ public sealed class GuardianCheckEngine
                 blocking: true,
                 $"非 VPN 网卡存在公网/NAT64 IPv6 出站路由：{string.Join("、", leakingNonTunAdapters)}（存在双栈旁路泄漏风险）");
         }
+
+        if (!Collected(network, GuardianCheckIds.Ipv6))
+            return Result(GuardianCheckIds.Ipv6, "IPv6 出口", CheckStatus.Unknown, true,
+                "IPv6 路由读取失败或尚未完成，无法排除旁路");
 
         var ipv6Status = CheckStatus.Ok;
         var ipv6Detail = "没有检测到在线公网 IPv6 地址或直连路由";
@@ -974,18 +994,22 @@ public sealed class GuardianCheckEngine
             return OptionalResult(config, GuardianCheckIds.ClaudeDomains, "Claude HTTPS", CheckStatus.Fail, blockingWhenFail: true, "代理路径失效，已跳过探测");
         }
 
-        var httpsOk = network.ClaudeHttps.Count > 0 &&
-                      network.ClaudeHttps.Values.All(value =>
-                          value != "timeout" && value != "HttpRequestException" && value != "000");
+        var valid = Collected(network, GuardianCheckIds.ClaudeDomains) && config.EffectiveClaudeDomains.All(domain =>
+            network.ClaudeHttps.ContainsKey(domain)) && network.ClaudeHttps.Values.All(value =>
+                int.TryParse(value, out var status) && status is >= 100 and <= 599);
+        var accessWarning = valid && network.ClaudeHttps.Any(pair =>
+            int.Parse(pair.Value) is < 200 or >= 400 &&
+            !(pair.Key.Equals("api.anthropic.com", StringComparison.OrdinalIgnoreCase) && pair.Value == "401"));
         return OptionalResult(
             config,
             GuardianCheckIds.ClaudeDomains,
             "Claude HTTPS",
-            httpsOk ? CheckStatus.Ok : CheckStatus.Unknown,
+            !valid ? CheckStatus.Unknown : accessWarning ? CheckStatus.Warn : CheckStatus.Ok,
             blockingWhenFail: true,
-            httpsOk
-                ? string.Join("，", network.ClaudeHttps.Select(pair => $"{pair.Key}={pair.Value}"))
-                : "Claude 域名 HTTPS 探测没有取得有效结果");
+            valid
+                ? string.Join("，", network.ClaudeHttps.Select(pair => $"{pair.Key}={pair.Value}")) +
+                  (accessWarning ? "；已收到响应，但存在访问/服务限制" : "；传输可达（API 401 表示需要认证）") + "；账号登录与发消息未测试"
+                : "Claude 域名 HTTPS 未取得完整有效状态码；账号与消息能力未验证");
     }
 
     private static IReadOnlyList<CheckResult> EvaluateIpReputation(GuardianConfig config, NetworkSnapshot network)
@@ -1311,6 +1335,8 @@ public sealed class GuardianCheckEngine
                     case GuardianCheckIds.DefaultRoute:
                         ev["gateway"] = network.Gateway;
                         ev["has_default_route"] = network.AdapterHasDefaultRoute ? "true" : "false";
+                        ev["best_routes"] = string.Join(";", (network.DestinationRoutes ?? Array.Empty<DestinationRoute>())
+                            .Select(route => $"{route.Destination}:if={route.InterfaceIndex},tun={route.ExpectedInterfaceIndex},ok={route.Succeeded}"));
                         break;
                     case GuardianCheckIds.EgressIp:
                         ev["ip"] = network.ExitIp;
@@ -1359,6 +1385,8 @@ public sealed class GuardianCheckEngine
                         break;
                     case GuardianCheckIds.ActiveConnections:
                         ev["total"] = network.ActiveConnections.Count.ToString();
+                        ev["udp_bound_endpoints"] = (network.UdpEndpoints?.Count ?? 0).ToString();
+                        ev["udp_semantics"] = "bound endpoints; not observed sends";
                         ev["unexpected"] = check.Status == CheckStatus.Ok ? "0" : "nonzero";
                         break;
                     case GuardianCheckIds.HelperService:
@@ -1372,6 +1400,12 @@ public sealed class GuardianCheckEngine
                     case GuardianCheckIds.FirewallReadiness:
                         ev["api_ok"] = network.FirewallApiOk ? "true" : "false";
                         ev["active_rules"] = network.FirewallActiveRuleCount.ToString();
+                        ev["policy_effective"] = network.FirewallPolicyEffective?.ToString() ?? "unknown";
+                        break;
+                    case GuardianCheckIds.TcpOnlyPolicy:
+                        ev["enabled"] = config.TcpOnlyEnabled.ToString();
+                        ev["state"] = network.TcpOnlyState ?? "unknown";
+                        ev["verification"] = "effective rule readback; packet capture not performed";
                         break;
                     case GuardianCheckIds.ClashRules:
                         ev["mode"] = network.ClashMode;
@@ -1409,7 +1443,14 @@ public sealed class GuardianCheckEngine
                 }
             }
 
-            enriched.Add(check with { Evidence = ev });
+            var observation = network.Observations?.GetValueOrDefault(check.Id);
+            var observedAt = check.Status == CheckStatus.Skip ? null : observation?.ObservedAt;
+            ev["collection_state"] = check.Status == CheckStatus.Skip ? "disabled" : observation is null ? "not-collected"
+                : observation.Succeeded ? "collected" : "failed";
+            ev["observed_at"] = observedAt?.ToString("O") ?? "";
+            ev["cached"] = observation?.IsCached == true ? "true" : "false";
+            if (!string.IsNullOrWhiteSpace(observation?.Error)) ev["collection_error"] = observation.Error;
+            enriched.Add(check with { Evidence = ev, ObservedAt = observedAt, IsCached = observation?.IsCached == true });
         }
 
         return enriched;

@@ -48,6 +48,7 @@ public partial class MainWindow : Window
     private string _timezoneOperationError = string.Empty;
     private string? _selectedCheckId;
     private DateTimeOffset _lastFullCheck = DateTimeOffset.MinValue;
+    private bool _fullCheckPending = true;
     private GuardianUpdate? _availableUpdate;
 
     public MainWindow()
@@ -132,7 +133,7 @@ public partial class MainWindow : Window
                 return;
             }
 
-            var full = DateTimeOffset.UtcNow - _lastFullCheck >=
+            var full = _fullCheckPending || DateTimeOffset.UtcNow - _lastFullCheck >=
                        TimeSpan.FromMinutes(_config.FullIntervalMinutes);
             await RunCheckAsync(full);
         };
@@ -147,13 +148,13 @@ public partial class MainWindow : Window
             _processMonitor.Changed += ClaudeProcessMonitor_Changed;
             _processMonitor.TryStart();
             _timezoneRecoveryReady = helperReady && await RestoreStaleTimezoneAsync();
+            if (helperReady) await ApplySavedTcpOnlyAsync();
             if (_exiting || _allowExit)
             {
                 return;
             }
 
             _timer.Start();
-            _lastFullCheck = DateTimeOffset.UtcNow;
             await RunCheckAsync(true);
 
             if (_compactWindowEnabled && !_exiting && !_allowExit)
@@ -367,6 +368,12 @@ public partial class MainWindow : Window
             }
 
             await SendHelperAsync("wfp-disable", null);
+            if (_config.TcpOnlyEnabled || _lastReport?.Network.TcpOnlyState is "active" or "stale" or "invalid")
+            {
+                var tcpOnly = await SendHelperAsync("tcp-only-disable", null);
+                if (!tcpOnly.Success)
+                    throw new InvalidOperationException("TCP-only 托管规则清理失败：" + tcpOnly.Detail);
+            }
 
             _allowExit = true;
         }
@@ -479,6 +486,13 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             TripReasonText.Text = $"单项复检失败：{ex.Message}";
+            _fullCheckPending = true;
+            if (_lastReport is not null)
+            {
+                _lastReport = EvidenceFreshness.AfterFailedCheck(_lastReport, sw.ElapsedMilliseconds, ex is OperationCanceledException);
+                Render(_lastReport);
+                await ApplyProtectionDecisionAsync(_lastReport, allowClearBlock: false);
+            }
         }
         finally
         {
@@ -596,15 +610,15 @@ public partial class MainWindow : Window
             LastCheckText.Text = full
                 ? "正在执行完整检查（VPN / WFP / DNS / IPv6 / WebRTC / Clash / ASN / 信誉）…"
                 : "正在执行轻量网络与进程检查…";
-            if (full)
-            {
-                _lastFullCheck = DateTimeOffset.UtcNow;
-            }
-
             using var cycleTimeout = CancellationTokenSource.CreateLinkedTokenSource(_checkCancellation.Token);
             cycleTimeout.CancelAfter(TimeSpan.FromSeconds(full ? 45 : 20));
             var report = await _engine.RunAsync(_config, full, cycleTimeout.Token);
             cycleTimeout.Token.ThrowIfCancellationRequested();
+            if (full || report.Network.ContextChanged)
+            {
+                _lastFullCheck = DateTimeOffset.UtcNow;
+                _fullCheckPending = false;
+            }
             report = report with
             {
                 Network = report.Network with
@@ -645,19 +659,15 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
+            _fullCheckPending = true;
             sw.Stop();
             var timeoutMsg = $"监控循环超时（{(full ? "完整检查 >45s" : "轻量检查 >20s")}），已保持当前安全状态";
             LastCheckText.Text = timeoutMsg;
             if (_lastReport is not null)
             {
-                _lastReport = _lastReport with
-                {
-                    Network = _lastReport.Network with
-                    {
-                        LastCycleDurationMs = sw.ElapsedMilliseconds,
-                        LastCycleTimedOut = true
-                    }
-                };
+                _lastReport = EvidenceFreshness.AfterTimeout(_lastReport, sw.ElapsedMilliseconds);
+                Render(_lastReport);
+                await ApplyProtectionDecisionAsync(_lastReport, allowClearBlock: false);
             }
 
             if (_blocked)
@@ -670,6 +680,12 @@ public partial class MainWindow : Window
         }
         catch (Exception exception)
         {
+            _fullCheckPending = true;
+            if (_lastReport is not null)
+            {
+                _lastReport = EvidenceFreshness.AfterFailedCheck(_lastReport, sw.ElapsedMilliseconds, false);
+                Render(_lastReport);
+            }
             var detail = $"后台检查失败：{exception.Message}";
             if (!_blocked && _lastReport is { ProtectedProcesses.Count: > 0 } lastReport)
             {
@@ -812,7 +828,9 @@ public partial class MainWindow : Window
         var warnCount = report.Checks.Count(c => c.Status == CheckStatus.Warn);
         var failCount = report.Checks.Count(c => c.Status == CheckStatus.Fail);
         var skipCount = report.Checks.Count(c => c.Status == CheckStatus.Skip);
+        var unknownCount = report.Checks.Count(c => c.Status == CheckStatus.Unknown);
         CheckSummaryText.Text = $"{okCount} 通过 · {warnCount} 警告 · {failCount} 失败" +
+                                (unknownCount > 0 ? $" · {unknownCount} 未验证" : string.Empty) +
                                 (skipCount > 0 ? $" · {skipCount} 跳过" : string.Empty);
 
         var issues = GetEffectiveBlockingFailures(report)
@@ -1036,9 +1054,19 @@ public partial class MainWindow : Window
             HelperDetail: result.HelperDetail ?? "管理员助手受限命名管道在线",
             WfpState: result.WfpState,
             WfpDetail: result.WfpDetail,
-            FirewallApiOk: result.FirewallApiOk ?? true,
+            FirewallApiOk: result.FirewallApiOk ?? false,
             FirewallActiveRuleCount: result.FirewallActiveRuleCount ?? 0,
-            FirewallDetail: result.FirewallDetail ?? string.Empty);
+            FirewallDetail: result.FirewallDetail ?? string.Empty,
+            FirewallPolicyEffective: result.FirewallPolicyEffective,
+            TcpOnlyState: result.TcpOnlyState,
+            TcpOnlyDetail: result.TcpOnlyDetail ?? string.Empty);
+    }
+
+    private async Task ApplySavedTcpOnlyAsync()
+    {
+        var result = await SendHelperAsync(_config.TcpOnlyEnabled ? "tcp-only-enable" : "tcp-only-disable", null);
+        if (!result.Success)
+            AppendToolOutput("[警告] TCP-only 策略未确认：" + result.Detail);
     }
 
     private async Task<bool> RestoreStaleTimezoneAsync()

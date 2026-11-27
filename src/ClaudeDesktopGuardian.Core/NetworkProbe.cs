@@ -20,7 +20,7 @@ public sealed record RegionAdaptProbeResult(
     string Source,
     string Error);
 
-public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckProbe
+public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckProbe
 {
     private static readonly HttpClient Http = CreateHttpClient(AddressFamily.InterNetwork, useSystemProxy: true);
     private static readonly HttpClient DirectTunHttp = CreateHttpClient(AddressFamily.InterNetwork, useSystemProxy: false);
@@ -54,13 +54,17 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         IpReputationService? ipReputationService = null,
         ClashInspector? clashInspector = null,
         Func<string, bool, CancellationToken, Task<string?>>? wfpStatusProvider = null,
-        Func<string, bool, CancellationToken, Task<HelperStatusSnapshot?>>? helperStatusProvider = null)
+        Func<string, bool, CancellationToken, Task<HelperStatusSnapshot?>>? helperStatusProvider = null,
+        INativeNetworkApi? nativeNetwork = null,
+        IGuardianClock? clock = null)
     {
         _ipHistoryStore = ipHistoryStore ?? new IpHistoryStore();
         _ipReputationService = ipReputationService ?? new IpReputationService(Http);
         _clashInspector = clashInspector ?? new ClashInspector();
         _wfpStatusProvider = wfpStatusProvider;
         _helperStatusProvider = helperStatusProvider;
+        _nativeEvidence = new NativeNetworkEvidence(nativeNetwork);
+        _clock = clock ?? new SystemGuardianClock();
     }
 
     public async Task<RegionAdaptProbeResult> ProbeRegionForAdaptAsync(
@@ -81,6 +85,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
                 $"代理或 TUN 未就绪（{(proxyClientAlive ? adapterDiag : proxyDetail)}），已中止地区适配以防真实 IP 暴露");
         }
 
+        PrepareEvidence(adapter, Array.Empty<ProcessInfo>(), config);
         var trace = await ProbeIpv4EgressMultiSourceAsync(cancellationToken);
         if (string.IsNullOrWhiteSpace(trace.Country))
         {
@@ -140,11 +145,18 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         var currentLocale = CultureInfo.CurrentCulture.Name;
 
         var hasAdapterIpv6 = HasIpv6Route(adapter);
-        var publicIpv6Routes = InspectPublicIpv6Routes(adapter);
+        PrepareEvidence(adapter, protectedProcesses, config);
+        if (_contextChanged || EgressRefreshDue())
+        {
+            var refreshed = await CaptureNetworkAsync(config, protectedProcesses, true, cancellationToken);
+            return refreshed with { ContextChanged = true };
+        }
+        var publicIpv6Routes = _publicIpv6Routes;
         var hasIpv6 = hasAdapterIpv6 || publicIpv6Routes.Count > 0;
 
         var helper = await QueryHelperAndWfpAsync(adapter, config, cancellationToken);
-        var connections = CaptureConnections(protectedProcesses);
+        MarkHelperEvidence(helper);
+        var connections = _connections;
         var (clientLang, clientLangSource) = ReadClaudeClientLanguage();
 
         if (adapter is null || !proxyClientAlive)
@@ -200,13 +212,16 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             HelperDetail = helper.HelperDetail,
             FirewallApiOk = helper.FirewallApiOk,
             FirewallActiveRuleCount = helper.FirewallActiveRuleCount,
-            FirewallDetail = helper.FirewallDetail
+            FirewallDetail = helper.FirewallDetail,
+            FirewallPolicyEffective = helper.FirewallPolicyEffective,
+            TcpOnlyState = helper.TcpOnlyState,
+            TcpOnlyDetail = helper.TcpOnlyDetail
         };
 
         var normalizedId = checkId.Trim().ToLowerInvariant();
         if (config.IsCheckDisabled(normalizedId))
         {
-            return snapshot;
+            return CompleteEvidence(snapshot);
         }
 
         switch (normalizedId)
@@ -226,6 +241,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
                 var tunDirect = await tunDirectTask;
                 _lastIpv4Trace = trace;
                 _lastTunDirectTrace = tunDirect;
+                MarkObserved(GuardianCheckIds.EgressIp, !string.IsNullOrWhiteSpace(trace.Ip), trace.Detail);
                 if (!config.IsCheckDisabled(GuardianCheckIds.IpConsistency) && !string.IsNullOrWhiteSpace(trace.Ip))
                 {
                     var (prevIp, uniqueCount) = _ipHistoryStore.RecordAndInspect(trace.Ip, DateTimeOffset.UtcNow);
@@ -284,6 +300,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
                 var (resolvedIps, dnsDetail) = await ProbeClaudeDnsAsync(cancellationToken);
                 _lastResolvedClaudeIps = resolvedIps;
                 _lastDnsDetail = dnsDetail;
+                MarkObserved(GuardianCheckIds.Dns, resolvedIps.Count > 0, dnsDetail);
                 snapshot = snapshot with
                 {
                     ResolvedClaudeIps = resolvedIps,
@@ -297,6 +314,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
                     ? await TryGetCloudflareTraceAsync(Ipv6Http, AddressFamily.InterNetworkV6, cancellationToken)
                     : TraceResolution.Empty;
                 _lastIpv6Trace = v6;
+                MarkObserved("ipv6-egress", ValidIpv6Observation(v6), v6.Detail);
                 snapshot = snapshot with
                 {
                     ExitIpv6 = v6.Ip,
@@ -322,6 +340,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
 
                 var stun = await ProbeStunAsync(config.EffectiveStunServers, hasAdapterIpv6, cancellationToken);
                 _lastStunResults = stun;
+                MarkObserved(GuardianCheckIds.WebRtc, true);
                 snapshot = snapshot with { StunResults = stun };
                 break;
             }
@@ -368,6 +387,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             {
                 var https = await ProbeClaudeHttpsAsync(config.EffectiveClaudeDomains, cancellationToken);
                 _lastClaudeHttps = https;
+                MarkObserved(GuardianCheckIds.ClaudeDomains, HasHttpResponses(config, https));
                 snapshot = snapshot with { ClaudeHttps = https };
                 break;
             }
@@ -403,7 +423,11 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             }
         }
 
-        return snapshot;
+        if (normalizedId is not (GuardianCheckIds.Dns or GuardianCheckIds.ClaudeDomains or GuardianCheckIds.EgressIp or
+            GuardianCheckIds.IpConsistency or GuardianCheckIds.Ipv6 or GuardianCheckIds.ActiveConnections or GuardianCheckIds.DefaultRoute or
+            GuardianCheckIds.HelperService or GuardianCheckIds.FirewallReadiness or GuardianCheckIds.WfpPolicy or GuardianCheckIds.TcpOnlyPolicy))
+            MarkObserved(normalizedId, true);
+        return CompleteEvidence(snapshot);
     }
 
     public async Task<NetworkSnapshot> CaptureNetworkAsync(
@@ -431,11 +455,14 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         var currentLocale = CultureInfo.CurrentCulture.Name;
 
         var hasAdapterIpv6 = HasIpv6Route(adapter);
-        var publicIpv6Routes = InspectPublicIpv6Routes(adapter);
+        PrepareEvidence(adapter, protectedProcesses, config, refreshDestinations: full);
+        full |= _contextChanged;
+        var publicIpv6Routes = _publicIpv6Routes;
         var hasIpv6 = hasAdapterIpv6 || publicIpv6Routes.Count > 0;
 
         var helper = await QueryHelperAndWfpAsync(adapter, config, cancellationToken);
-        var connections = CaptureConnections(protectedProcesses);
+        MarkHelperEvidence(helper);
+        var connections = _connections;
         var (clientLang, clientLangSource) = ReadClaudeClientLanguage();
 
         // Strict path gate: NEVER issue external probes if proxy client or TUN adapter is offline!
@@ -470,7 +497,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         _lastSystemProxyUri = systemProxyUri;
 
         // Run network probes through the verified active VPN/TUN path
-        var runIpv4 = full || string.IsNullOrWhiteSpace(_lastIpv4Trace.Ip);
+        var runIpv4 = full || EgressRefreshDue();
         var traceTask = runIpv4
             ? ProbeIpv4EgressMultiSourceAsync(Http, cancellationToken)
             : Task.FromResult(_lastIpv4Trace);
@@ -510,16 +537,30 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         var trace = await traceTask;
         if (runIpv4)
         {
+            var exitChanged = EvidenceFreshness.EgressBaselineChanged(_lastIpv4Trace.Ip, _lastIpv4Trace.Country, trace.Ip, trace.Country);
             _lastIpv4Trace = trace;
+            MarkObserved(GuardianCheckIds.EgressIp, !string.IsNullOrWhiteSpace(trace.Ip), trace.Detail);
+            if (exitChanged && !full)
+            {
+                InvalidateCachedEvidence();
+                return await CaptureNetworkAsync(config, protectedProcesses, true, cancellationToken);
+            }
         }
 
         var tunDirectTrace = await tunDirectTask;
+        if (!full && runIpv4 && systemProxyConfigured && EvidenceFreshness.EgressBaselineChanged(
+            _lastTunDirectTrace.Ip, _lastTunDirectTrace.Country, tunDirectTrace.Ip, tunDirectTrace.Country))
+        {
+            InvalidateCachedEvidence();
+            return await CaptureNetworkAsync(config, protectedProcesses, true, cancellationToken);
+        }
         _lastTunDirectTrace = systemProxyConfigured ? tunDirectTrace : TraceResolution.Empty;
 
         var ipv6Trace = await ipv6TraceTask;
         if (full)
         {
             _lastIpv6Trace = ipv6Trace;
+            if (hasAdapterIpv6) MarkObserved("ipv6-egress", ValidIpv6Observation(ipv6Trace), ipv6Trace.Detail);
         }
 
         var (resolvedClaudeIps, dnsProbeDetail) = await dnsTask;
@@ -527,18 +568,21 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         {
             _lastResolvedClaudeIps = resolvedClaudeIps;
             _lastDnsDetail = dnsProbeDetail;
+            MarkObserved(GuardianCheckIds.Dns, resolvedClaudeIps.Count > 0, dnsProbeDetail);
         }
 
         var stunResults = await stunTask;
         if (runStun)
         {
             _lastStunResults = stunResults;
+            MarkObserved(GuardianCheckIds.WebRtc, true);
         }
 
         var claudeHttps = await claudeTask;
         if (full && !config.IsCheckDisabled(GuardianCheckIds.ClaudeDomains))
         {
             _lastClaudeHttps = claudeHttps;
+            MarkObserved(GuardianCheckIds.ClaudeDomains, HasHttpResponses(config, claudeHttps));
         }
 
         var clashAudit = await clashTask;
@@ -612,7 +656,16 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
                     ? config.ExpectedExitCountry
                     : trace.Country);
 
-        return new NetworkSnapshot(
+        if (full)
+        {
+            foreach (var id in new[] { GuardianCheckIds.Timezone,
+                         GuardianCheckIds.ClashRules, GuardianCheckIds.Asn })
+                MarkObserved(id, true);
+            foreach (var id in GuardianCheckIds.IpReputationIds)
+                _observations[id] = new(ipRepRecord is not null, ipRepRecord?.CheckedAt ?? _clock.UtcNow,
+                    ipRepError, ipRepRecord is not null && ipRepRecord.CheckedAt < _cycleStartedAt);
+        }
+        return CompleteEvidence(new NetworkSnapshot(
             adapter.Name,
             adapter.Description,
             localAddress,
@@ -670,7 +723,10 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             SystemProxyUri: systemProxyUri,
             TunDirectExitIp: tunDirectTrace.Ip,
             TunDirectExitCountry: tunDirectTrace.Country,
-            TunDirectProbeDetail: tunDirectTrace.Detail);
+            TunDirectProbeDetail: tunDirectTrace.Detail,
+            FirewallPolicyEffective: helper.FirewallPolicyEffective,
+            TcpOnlyState: helper.TcpOnlyState,
+            TcpOnlyDetail: helper.TcpOnlyDetail));
     }
 
     private NetworkSnapshot BuildSkippedSnapshot(
@@ -699,7 +755,7 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             ? config.ExpectedLocale
             : CountryDefaults.GetExpectedLocale(config.ExpectedExitCountry);
 
-        return new NetworkSnapshot(
+        return CompleteEvidence(new NetworkSnapshot(
             adapter?.Name ?? string.Empty,
             adapter?.Description ?? string.Empty,
             localAddress,
@@ -752,7 +808,10 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             HelperDetail: helper.HelperDetail,
             FirewallApiOk: helper.FirewallApiOk,
             FirewallActiveRuleCount: helper.FirewallActiveRuleCount,
-            FirewallDetail: helper.FirewallDetail);
+            FirewallDetail: helper.FirewallDetail,
+            FirewallPolicyEffective: helper.FirewallPolicyEffective,
+            TcpOnlyState: helper.TcpOnlyState,
+            TcpOnlyDetail: helper.TcpOnlyDetail));
     }
 
     public static (string ClientName, bool Alive, string Detail) DetectProxyClient(string proxyClientMode)
@@ -981,17 +1040,13 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
 
         var (directState, directDetail) = await QueryWfpStateAsync(adapter, config, cancellationToken);
         return new HelperStatusSnapshot(
-            HelperAlive: _helperStatusProvider is null,
-            HelperDetail: _helperStatusProvider is null
-                ? "受限命名管道在线"
-                : "管理员助手命名管道无响应",
+            HelperAlive: false,
+            HelperDetail: "管理员助手未配置或命名管道无响应",
             WfpState: directState,
             WfpDetail: directDetail,
-            FirewallApiOk: _helperStatusProvider is null,
+            FirewallApiOk: false,
             FirewallActiveRuleCount: 0,
-            FirewallDetail: _helperStatusProvider is null
-                ? "防火墙控制就绪"
-                : "管理员助手离线，无法核验防火墙规则");
+            FirewallDetail: "管理员助手离线，无法核验防火墙规则");
     }
 
     private async Task<(string State, string Detail)> QueryWfpStateAsync(
@@ -1400,72 +1455,21 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             !address.Address.IsIPv6LinkLocal &&
             !address.Address.IsIPv6Multicast &&
             !IPAddress.IsLoopback(address.Address));
-        var hasIpv6Gateway = properties.GatewayAddresses.Any(address =>
-            address.Address.AddressFamily == AddressFamily.InterNetworkV6 &&
-            !address.Address.IsIPv6Multicast);
-        return hasIpv6Address && hasIpv6Gateway;
+        return hasIpv6Address;
     }
 
     public static IReadOnlyList<string> InspectPublicIpv6Routes(NetworkInterface? vpnAdapter)
     {
-        if (!OperatingSystem.IsWindows())
-        {
-            return Array.Empty<string>();
-        }
-
+        var evidence = new NativeNetworkEvidence().CaptureRoutes(DateTimeOffset.UtcNow);
+        if (!evidence.Observation.Succeeded) throw new InvalidOperationException(evidence.Observation.Error);
         var vpnIndex = vpnAdapter is not null ? GetIpv6InterfaceIndex(vpnAdapter) : -1;
-        var indexToName = new Dictionary<int, string>();
-        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
-        {
-            var idx = GetIpv6InterfaceIndex(nic);
-            if (idx > 0)
-            {
-                indexToName[idx] = nic.Name;
-            }
-        }
-
-        var leakingAdapters = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (GetIpForwardTable2(23 /* AF_INET6 */, out var tablePtr) != 0 || tablePtr == IntPtr.Zero)
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            var numEntries = Marshal.ReadInt32(tablePtr);
-            // MIB_IPFORWARD_TABLE2: 4-byte NumEntries + 4-byte padding for 8-byte-aligned MIB_IPFORWARD_ROW2 (104 bytes)
-            const int offset = 8;
-            const int rowSize = 104;
-            var addrBytes = new byte[16];
-            for (var i = 0; i < numEntries; i++)
-            {
-                var rowPtr = IntPtr.Add(tablePtr, offset + i * rowSize);
-                var interfaceIndex = Marshal.ReadInt32(rowPtr, 8);
-                if (interfaceIndex == vpnIndex)
-                {
-                    continue; // Routes via the VPN TUN adapter itself are handled by the IPv6 egress probe
-                }
-
-                Marshal.Copy(IntPtr.Add(rowPtr, 20), addrBytes, 0, 16);
-                var prefixLen = Marshal.ReadByte(rowPtr, 40);
-                if (IsPublicOrNat64Ipv6Prefix(addrBytes, prefixLen))
-                {
-                    var name = indexToName.TryGetValue(interfaceIndex, out var alias)
-                        ? alias
-                        : $"ifIndex={interfaceIndex}";
-                    leakingAdapters.Add(name);
-                }
-            }
-        }
-        catch
-        {
-        }
-        finally
-        {
-            FreeMibTable(tablePtr);
-        }
-
-        return leakingAdapters.OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToArray();
+        var names = NetworkInterface.GetAllNetworkInterfaces().GroupBy(GetIpv6InterfaceIndex)
+            .ToDictionary(group => group.Key, group => group.First().Name);
+        return evidence.Routes.Where(route => route.InterfaceIndex != vpnIndex &&
+                route.Prefix.AddressFamily == AddressFamily.InterNetworkV6 &&
+                IsPublicOrNat64Ipv6Prefix(route.Prefix.GetAddressBytes(), route.PrefixLength))
+            .Select(route => names.GetValueOrDefault(route.InterfaceIndex, $"ifIndex={route.InterfaceIndex}"))
+            .Distinct(StringComparer.OrdinalIgnoreCase).OrderBy(name => name, StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
     public static bool IsPublicOrNat64Ipv6Prefix(byte[] addressBytes, int prefixLength)
@@ -1673,6 +1677,8 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
             request[7] = 0x42;
             Buffer.BlockCopy(transaction, 0, request, 8, 12);
 
+            ValidateProbeRoute(address, systemProxy: false);
+            cancellationToken.ThrowIfCancellationRequested();
             await udp.SendAsync(request, request.Length, new IPEndPoint(address, port));
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(3));
@@ -1764,128 +1770,47 @@ public sealed class WindowsEnvironmentProbe : IEnvironmentProbe, ISingleCheckPro
         return distinct.Length == 0 ? "STUN 超时" : string.Join("；", distinct);
     }
 
-    private static IReadOnlyList<string> CaptureConnections(IReadOnlyList<ProcessInfo> processes)
-    {
-        if (!OperatingSystem.IsWindows())
-        {
-            return Array.Empty<string>();
-        }
-
-        try
-        {
-            var processIds = processes.Select(process => (uint)process.ProcessId).ToHashSet();
-            var rows = ReadTcpRows();
-            return rows
-                .Where(row => row.State == TcpState.Established && processIds.Contains(row.ProcessId))
-                .Select(row => $"{row.ProcessId} {row.RemoteAddress}:{row.RemotePort}")
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .ToArray();
-        }
-        catch
-        {
-            return Array.Empty<string>();
-        }
-    }
-
-    private static IReadOnlyList<TcpRow> ReadTcpRows()
-    {
-        var size = 0;
-        _ = GetExtendedTcpTable(IntPtr.Zero, ref size, true, 2, 5, 0);
-        var buffer = Marshal.AllocHGlobal(size);
-        try
-        {
-            if (GetExtendedTcpTable(buffer, ref size, true, 2, 5, 0) != 0)
-            {
-                return Array.Empty<TcpRow>();
-            }
-
-            var count = Marshal.ReadInt32(buffer);
-            var rows = new List<TcpRow>(count);
-            var rowSize = Marshal.SizeOf<MibTcpRowOwnerPid>();
-            var current = buffer + sizeof(int);
-            for (var index = 0; index < count; index++)
-            {
-                var row = Marshal.PtrToStructure<MibTcpRowOwnerPid>(current);
-                var remoteAddress = new IPAddress(row.RemoteAddress).ToString();
-                var remotePort = (ushort)IPAddress.NetworkToHostOrder((short)row.RemotePort);
-                rows.Add(new TcpRow((TcpState)row.State, row.ProcessId, remoteAddress, remotePort));
-                current += rowSize;
-            }
-
-            return rows;
-        }
-        finally
-        {
-            Marshal.FreeHGlobal(buffer);
-        }
-    }
-
-    [DllImport("iphlpapi.dll", SetLastError = true)]
-    private static extern uint GetExtendedTcpTable(
-        IntPtr tcpTable,
-        ref int bufferLength,
-        bool sort,
-        int addressFamily,
-        int tableClass,
-        uint reserved);
-
     [DllImport("iphlpapi.dll")]
     private static extern uint GetIpForwardTable2(ushort family, out IntPtr table);
 
     [DllImport("iphlpapi.dll")]
     private static extern void FreeMibTable(IntPtr memory);
 
-    [StructLayout(LayoutKind.Sequential)]
-    private struct MibTcpRowOwnerPid
+    internal static HttpClient CreateHttpClient(AddressFamily addressFamily, bool useSystemProxy,
+        Action<IPAddress, bool>? routeValidator = null)
     {
-        public uint State;
-        public uint LocalAddress;
-        public uint LocalPort;
-        public uint RemoteAddress;
-        public uint RemotePort;
-        public uint ProcessId;
-    }
+        var handler = new SocketsHttpHandler { UseProxy = useSystemProxy, PooledConnectionLifetime = TimeSpan.Zero };
 
-    private sealed record TcpRow(TcpState State, uint ProcessId, string RemoteAddress, ushort RemotePort);
-
-    private static HttpClient CreateHttpClient(AddressFamily addressFamily, bool useSystemProxy)
-    {
-        var handler = new SocketsHttpHandler { UseProxy = useSystemProxy };
-
-        if (!useSystemProxy && addressFamily == AddressFamily.InterNetworkV6)
+        handler.ConnectCallback = async (context, cancellationToken) =>
         {
-            handler.ConnectCallback = async (context, cancellationToken) =>
+            var addresses = (await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken))
+                .Where(item => item.AddressFamily == addressFamily)
+                .Distinct()
+                .ToArray();
+            if (addresses.Length == 0)
+                throw new HttpRequestException($"没有找到 {addressFamily} 出口地址");
+
+            Exception? lastException = null;
+            foreach (var address in addresses)
             {
-                var addresses = (await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, cancellationToken))
-                    .Where(item => item.AddressFamily == addressFamily)
-                    .Distinct()
-                    .ToArray();
-                if (addresses.Length == 0)
+                var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                try
                 {
-                    throw new HttpRequestException($"没有找到 {addressFamily} 出口地址");
+                    (routeValidator ?? ValidateProbeRoute)(address, useSystemProxy);
+                    using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    attemptTimeout.CancelAfter(TimeSpan.FromSeconds(3));
+                    await socket.ConnectAsync(new IPEndPoint(address, context.DnsEndPoint.Port), attemptTimeout.Token);
+                    return new NetworkStream(socket, ownsSocket: true);
                 }
-
-                Exception? lastException = null;
-                foreach (var address in addresses)
+                catch (Exception exception)
                 {
-                    var socket = new Socket(address.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-                    try
-                    {
-                        using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                        attemptTimeout.CancelAfter(TimeSpan.FromSeconds(3));
-                        await socket.ConnectAsync(new IPEndPoint(address, context.DnsEndPoint.Port), attemptTimeout.Token);
-                        return new NetworkStream(socket, ownsSocket: true);
-                    }
-                    catch (Exception exception)
-                    {
-                        lastException = exception;
-                        socket.Dispose();
-                    }
+                    lastException = exception;
+                    socket.Dispose();
                 }
+            }
 
-                throw new HttpRequestException($"无法连接 {context.DnsEndPoint.Host} 的 {addressFamily} 地址", lastException);
-            };
-        }
+            throw new HttpRequestException($"无法连接 {context.DnsEndPoint.Host} 的 {addressFamily} 地址", lastException);
+        };
 
         return new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
     }

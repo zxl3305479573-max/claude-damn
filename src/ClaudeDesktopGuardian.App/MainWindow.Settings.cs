@@ -52,6 +52,7 @@ public partial class MainWindow
 
         WfpStrictCheckBox.IsChecked = cfg.WfpStrictEnabled;
         WfpLoopbackCheckBox.IsChecked = cfg.WfpAllowLoopback;
+        TcpOnlyCheckBox.IsChecked = cfg.TcpOnlyEnabled;
         AllowOptionalFailuresCheckBox.IsChecked = cfg.AllowOptionalFailures;
         LoggingEnabledCheckBox.IsChecked = cfg.LoggingEnabled;
 
@@ -120,6 +121,7 @@ public partial class MainWindow
 
             var previousWfpStrict = _config.WfpStrictEnabled;
             var previousWfpLoopback = _config.WfpAllowLoopback;
+            var previousTcpOnly = _config.TcpOnlyEnabled;
 
             var candidate = _config with
             {
@@ -135,6 +137,7 @@ public partial class MainWindow
                 FullIntervalMinutes = fullMin,
                 WfpStrictEnabled = WfpStrictCheckBox.IsChecked == true,
                 WfpAllowLoopback = WfpLoopbackCheckBox.IsChecked == true,
+                TcpOnlyEnabled = TcpOnlyCheckBox.IsChecked == true,
                 AllowOptionalFailures = AllowOptionalFailuresCheckBox.IsChecked == true,
                 LoggingEnabled = LoggingEnabledCheckBox.IsChecked == true,
                 DisabledOptionalChecks = disabledOptional,
@@ -144,6 +147,9 @@ public partial class MainWindow
             _config = _configStore.Save(candidate, preserveExistingApiKeyIfEmpty: true);
             _timer.Interval = TimeSpan.FromSeconds(_config.LightIntervalSeconds);
             LoadConfigToUi(_config);
+
+            if (previousTcpOnly != _config.TcpOnlyEnabled)
+                await ApplySavedTcpOnlyAsync();
 
             var wfpNotice = string.Empty;
             if (_config.WfpStrictEnabled &&

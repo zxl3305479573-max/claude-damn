@@ -873,8 +873,8 @@ Assert(
 extProbe.ResetHealthy();
 var full23 = await extEngine.RunAsync(new GuardianConfig(), full: true, CancellationToken.None);
 var light23 = await extEngine.RunAsync(new GuardianConfig(), full: false, CancellationToken.None);
-Assert(full23.Checks.Count == 23, $"完整检查应输出 23 项（实际 {full23.Checks.Count}）", failures);
-Assert(light23.Checks.Count == 23, $"完成首次完整检查后，轻量刷新仍应保留 23 项（实际 {light23.Checks.Count}）", failures);
+Assert(full23.Checks.Count == 24, $"完整检查应输出 24 项（实际 {full23.Checks.Count}）", failures);
+Assert(light23.Checks.Count == 24, $"完成首次完整检查后，轻量刷新仍应保留 24 项（实际 {light23.Checks.Count}）", failures);
 Assert(light23.Checks.Any(c => c.Id == GuardianCheckIds.ClashRules) &&
        light23.Checks.Any(c => c.Id == GuardianCheckIds.ClaudeDomains) &&
        light23.Checks.Any(c => c.Id == GuardianCheckIds.IpRepScore),
@@ -980,6 +980,7 @@ try
     var pStore = new GuardianConfigStore(policyCfgPath);
     var savedReject = pStore.Save(new GuardianConfig(
         WebRtcPolicy: WebRtcPolicies.Reject,
+        TcpOnlyEnabled: true,
         IpReputation: new IpReputationConfig("https://rep.test/v1/{ip}", "KEY-XYZ", 25, 7)));
     Assert(savedReject.WebRtcPolicy == WebRtcPolicies.Reject, "WebRTC reject 策略应持久化", failures);
     Assert(savedReject.IpReputation?.Url == "https://rep.test/v1/{ip}", "包含 {ip} 占位符的 HTTPS 信誉 URL 应通过校验", failures);
@@ -1000,6 +1001,7 @@ try
     using var pSr = new StreamReader(pZip.GetEntry("config-redacted.json")!.Open(), Encoding.UTF8);
     var redactedJson = pSr.ReadToEnd();
     Assert(redactedJson.Contains("\"webrtc_policy\": \"reject\"", StringComparison.Ordinal) &&
+           redactedJson.Contains("\"tcp_only_enabled\": true", StringComparison.Ordinal) &&
            !redactedJson.Contains("KEY-XYZ", StringComparison.Ordinal),
         "诊断包应记录 webrtc_policy 且不泄漏密钥", failures);
 }
@@ -1185,8 +1187,8 @@ extProbe.ResolvedClaudeIps = Array.Empty<string>();
 extProbe.DnsProbeDetailOverride = "claude.ai DNS 解析失败：No such host is known";
 var dnsFailReport = await extEngine.RunAsync(new GuardianConfig(), full: true, CancellationToken.None);
 Assert(
-    dnsFailReport.Checks.Any(c => c.Id == GuardianCheckIds.Dns && c.Status == CheckStatus.Fail && c.Blocking),
-    "claude.ai DNS 解析失败时必须判 Fail 阻断，不得静默吞成 Ok",
+    dnsFailReport.Checks.Any(c => c.Id == GuardianCheckIds.Dns && c.Status == CheckStatus.Unknown && c.Blocking),
+    "claude.ai DNS 解析失败时必须判 Unknown 阻断，不得静默吞成 Ok",
     failures);
 extProbe.ResetHealthy();
 
@@ -1227,8 +1229,8 @@ extProbe.ResetHealthy();
 
 // Structured Evidence populated across all 23 checks
 var evidenceReport = await extEngine.RunAsync(new GuardianConfig(), full: true, CancellationToken.None);
-Assert(evidenceReport.Checks.Count == 23 && evidenceReport.Checks.All(c => c.Evidence.Count > 0),
-    "全部 23 项检查均必须填充非空结构化 Evidence 字典", failures);
+Assert(evidenceReport.Checks.Count == 24 && evidenceReport.Checks.All(c => c.Evidence.Count > 0),
+    "全部 24 项检查均必须填充非空结构化 Evidence 字典", failures);
 
 // Safe Launch Gate
 Assert(!ProtectionPolicyEvaluator.EvaluateLaunchGate(evidenceReport, currentlyBlocked: true, ignoreWebRtc: false).Allowed,
@@ -1496,6 +1498,7 @@ try
     var cliStatePath = Path.Combine(cliRoot, "state.json");
     var cliLogPath = Path.Combine(cliRoot, "logs", "guardian.log");
     var cliDataPath = Path.Combine(cliRoot, "ClaudeData");
+    var cliHelperCommands = new List<string>();
 
     GuardianCliContext MakeCliCtx(StringWriter stdout, StringWriter stderr, TextReader? stdin = null, Func<string, string?>? env = null) =>
         new()
@@ -1509,7 +1512,12 @@ try
             Out = stdout,
             Error = stderr,
             In = stdin ?? TextReader.Null,
-            GetEnvironmentVariable = env ?? (_ => null)
+            GetEnvironmentVariable = env ?? (_ => null),
+            SendHelper = (command, _) =>
+            {
+                cliHelperCommands.Add(command);
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
+            }
         };
 
     // 19a. diagnose-proxy --config MUST NOT write client log or create accounts dir
@@ -1532,7 +1540,7 @@ try
         new[]
         {
             "set-check-config",
-            """{"disabled":["dns"],"allowOptionalFailures":true,"webrtcPolicy":"reject","ipReputation":{"url":"https://rep.cli.test/{ip}","key":"TOP-SECRET-CLI-KEY","threshold":30,"cacheDays":14}}"""
+            """{"disabled":["dns"],"allowOptionalFailures":true,"webrtcPolicy":"reject","tcpOnlyEnabled":true,"ipReputation":{"url":"https://rep.cli.test/{ip}","key":"TOP-SECRET-CLI-KEY","threshold":30,"cacheDays":14}}"""
         },
         MakeCliCtx(setOut, setErr));
     Assert(setCode == 0, "CLI set-check-config 应成功：" + setErr, failures);
@@ -1543,8 +1551,13 @@ try
     Assert(getCode == 0 &&
            getJson.Contains("\"keyConfigured\":true", StringComparison.Ordinal) &&
            getJson.Contains("\"webrtcPolicy\":\"reject\"", StringComparison.Ordinal) &&
+           getJson.Contains("\"tcpOnlyEnabled\":true", StringComparison.Ordinal) &&
            !getJson.Contains("TOP-SECRET-CLI-KEY", StringComparison.Ordinal),
         "CLI get-check-config 必须回报 keyConfigured 且绝不回显明文密钥", failures);
+    Assert(cliHelperCommands.SequenceEqual(new[] { "tcp-only-enable" }), "CLI 启用配置应通过认证助手应用策略", failures);
+    Assert(await GuardianCliRunner.RunAsync(new[] { "set-check-config", """{"tcpOnlyEnabled":false}""" },
+        MakeCliCtx(new StringWriter(), new StringWriter())) == 0 && cliHelperCommands.Last() == "tcp-only-disable",
+        "CLI 关闭配置应清理专用托管策略", failures);
 
     // 19c. set-client / get-client / set-flclash-controller / checkdetail
     Assert(await GuardianCliRunner.RunAsync(new[] { "set-client", "flclash" }, MakeCliCtx(new StringWriter(), new StringWriter())) == 0,
@@ -1557,8 +1570,8 @@ try
     var detailOut = new StringWriter();
     var detailCode = await GuardianCliRunner.RunAsync(new[] { "checkdetail" }, MakeCliCtx(detailOut, new StringWriter()));
     var detailLines = detailOut.ToString().Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-    Assert(detailCode == 0 && detailLines.Length == 23,
-        $"CLI checkdetail 应返回 0 且输出 23 行（实际 code={detailCode}, lines={detailLines.Length}）", failures);
+    Assert(detailCode == 0 && detailLines.Length == 24,
+        $"CLI checkdetail 应返回 0 且输出 24 行（实际 code={detailCode}, lines={detailLines.Length}）", failures);
 
     // 19d. snapshot-export & snapshot-import via stdin password
     Directory.CreateDirectory(cliDataPath);
@@ -1847,6 +1860,7 @@ using (var pipeCts = new CancellationTokenSource(TimeSpan.FromSeconds(5)))
 
 await WebRtcStatusTests.RunAsync(failures);
 await UiResponsivenessTests.RunAsync(failures);
+await DetectionEvidenceTests.RunAsync(failures);
 
 if (failures.Count > 0)
 {
@@ -1930,8 +1944,12 @@ sealed class FakeProbe : IEnvironmentProbe
             StunResults,
             new[] { "203.0.113.10:443" },
             HasIpv6,
-            new Dictionary<string, string> { ["api.anthropic.com"] = "200" },
-            Ipv6ProbeDetail: Ipv6ProbeDetail));
+            config.EffectiveClaudeDomains.ToDictionary(domain => domain, _ => "200"),
+            Ipv6ProbeDetail: Ipv6ProbeDetail,
+            ResolvedClaudeIps: new[] { "198.18.0.42" },
+            Observations: DetectionEvidenceTests.HealthyObservations(),
+            DestinationRoutes: DetectionEvidenceTests.HealthyRoutes,
+            FirewallPolicyEffective: true));
     }
 }
 
@@ -2015,7 +2033,7 @@ sealed class ExtendedFakeProbe : IEnvironmentProbe
             PublicIpv6Routes.Count > 0,
             ProxyPathSkipped
                 ? new Dictionary<string, string>()
-                : new Dictionary<string, string> { ["api.anthropic.com"] = "401", ["claude.ai"] = "200" },
+                : config.EffectiveClaudeDomains.ToDictionary(domain => domain, domain => domain == "api.anthropic.com" ? "401" : "200"),
             ExitTimezone: "America/Los_Angeles",
             ExitWindowsTimezone: "Pacific Standard Time",
             CurrentWindowsTimezone: "Pacific Standard Time",
@@ -2054,7 +2072,10 @@ sealed class ExtendedFakeProbe : IEnvironmentProbe
             SystemProxyUri: SystemProxyUri,
             TunDirectExitIp: TunDirectExitIp,
             TunDirectExitCountry: TunDirectExitCountry,
-            TunDirectProbeDetail: TunDirectProbeDetail));
+            TunDirectProbeDetail: TunDirectProbeDetail,
+            Observations: DetectionEvidenceTests.HealthyObservations(),
+            DestinationRoutes: DetectionEvidenceTests.HealthyRoutes,
+            FirewallPolicyEffective: true));
     }
 }
 
@@ -2099,7 +2120,7 @@ sealed class FakeHelperExecutor : IHelperSystemExecutor
     public HelperFirewallStatus QueryFirewallGroupStatus(string groupName)
     {
         var count = ActiveFirewallRules.Count(r => string.Equals(r.Group, groupName, StringComparison.OrdinalIgnoreCase));
-        return new HelperFirewallStatus(true, count, $"mock group {groupName} rules={count}");
+        return new HelperFirewallStatus(true, count, $"mock group {groupName} rules={count}", true);
     }
 
     public async Task ClearFirewallGroupAsync(string groupName)
@@ -2128,7 +2149,7 @@ sealed class FakeHelperExecutor : IHelperSystemExecutor
     public Task<(int Terminated, int Remaining)> TerminateProcessesAsync(IReadOnlyList<int> processIds)
     {
         TerminatedPids.AddRange(processIds);
-        return Task.FromResult((processIds.Count, 0));
+        return Task.FromResult((processIds.Count, TcpOnlyRemaining));
     }
 
     public HelperWfpStatus QueryWfpDetailedSafe(string? adapterGuid, bool allowLoopback) =>
@@ -2143,6 +2164,20 @@ sealed class FakeHelperExecutor : IHelperSystemExecutor
     public void DisableWfp() => WfpRemovedCount++;
 
     public Task FlushDnsAsync() => Task.CompletedTask;
+
+    public string TcpOnlyState { get; set; } = "off";
+    public int TcpOnlyRemaining { get; set; }
+    public HelperTcpOnlyStatus QueryTcpOnlyStatus(string groupName) => new(TcpOnlyState, "mock TCP-only");
+    public Task<HelperTcpOnlyStatus> EnableTcpOnlyAsync(string groupName)
+    {
+        TcpOnlyState = "active";
+        return Task.FromResult(QueryTcpOnlyStatus(groupName));
+    }
+    public Task DisableTcpOnlyAsync(string groupName)
+    {
+        TcpOnlyState = "off";
+        return Task.CompletedTask;
+    }
 
     public Task DisableIpv6AdaptersAsync(IReadOnlyList<string> adapterNames)
     {
@@ -2178,13 +2213,16 @@ sealed class CountingSingleCheckProbe : IEnvironmentProbe, ISingleCheckProbe
             new[] { new StunResult("stun.cloudflare.com", 3478, "ok", "203.0.113.10", "ok") },
             Array.Empty<string>(),
             false,
-            new Dictionary<string, string> { ["api.anthropic.com"] = "401" },
+            config.EffectiveClaudeDomains.ToDictionary(domain => domain, domain => domain == "api.anthropic.com" ? "401" : "200"),
             AdapterIsFakeIp: true,
             AdapterHasDefaultRoute: true,
             ProxyClientAlive: true,
             ResolvedClaudeIps: NextDnsIps,
             HelperAlive: true,
-            FirewallApiOk: true));
+            FirewallApiOk: true,
+            Observations: DetectionEvidenceTests.HealthyObservations(),
+            DestinationRoutes: DetectionEvidenceTests.HealthyRoutes,
+            FirewallPolicyEffective: true));
     }
 
     public Task<NetworkSnapshot> CaptureSingleCheckAsync(

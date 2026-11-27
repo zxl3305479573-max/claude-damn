@@ -604,6 +604,7 @@ public static class DiagnosticsExporter
                 expected_locale = config.ExpectedLocale,
                 wfp_strict_enabled = config.WfpStrictEnabled,
                 wfp_allow_loopback = config.WfpAllowLoopback,
+                tcp_only_enabled = config.TcpOnlyEnabled,
                 webrtc_policy = WebRtcPolicies.Normalize(config.WebRtcPolicy),
                 allow_optional_failures = config.AllowOptionalFailures,
                 logging_enabled = config.LoggingEnabled,

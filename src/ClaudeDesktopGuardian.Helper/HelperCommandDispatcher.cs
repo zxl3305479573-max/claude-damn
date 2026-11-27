@@ -12,7 +12,10 @@ namespace ClaudeDesktopGuardian.Helper;
 internal sealed record HelperFirewallStatus(
     bool ApiOk,
     int ActiveRuleCount,
-    string Detail);
+    string Detail,
+    bool? PolicyEffective = null);
+
+internal sealed record HelperTcpOnlyStatus(string State, string Detail, int RuleCount = 0);
 
 internal sealed record HelperWfpStatus(
     string State,
@@ -57,6 +60,9 @@ internal interface IHelperSystemExecutor
     void DisableWfp();
     Task FlushDnsAsync();
     Task DisableIpv6AdaptersAsync(IReadOnlyList<string> adapterNames);
+    HelperTcpOnlyStatus QueryTcpOnlyStatus(string groupName);
+    Task<HelperTcpOnlyStatus> EnableTcpOnlyAsync(string groupName);
+    Task DisableTcpOnlyAsync(string groupName);
 }
 
 internal sealed class HelperCommandDispatcher
@@ -65,6 +71,14 @@ internal sealed class HelperCommandDispatcher
 
     private readonly IHelperSystemExecutor _executor;
     private readonly SemaphoreSlim _mutationLock = new(1, 1);
+    private int _tcpOnlyRefreshPending = 1;
+
+    private HelperTcpOnlyStatus TcpOnlyStatus(string group)
+    {
+        var status = _executor.QueryTcpOnlyStatus(group);
+        return status.State == "active" && Volatile.Read(ref _tcpOnlyRefreshPending) != 0
+            ? status with { State = "stale", Detail = "助手重启或刷新尚未完成，需要重新应用并验证旧会话退出" } : status;
+    }
 
     public HelperCommandDispatcher(IHelperSystemExecutor executor)
     {
@@ -151,6 +165,9 @@ internal sealed class HelperCommandDispatcher
                     "wfp-status" or
                     "wfp-enable" or
                     "wfp-disable" or
+                    "tcp-only-enable" or
+                    "tcp-only-status" or
+                    "tcp-only-disable" or
                     "flush-dns" or
                     "disable-ipv6-adapters"))
             {
@@ -165,6 +182,7 @@ internal sealed class HelperCommandDispatcher
             {
                 var wfp = _executor.QueryWfpDetailedSafe(request.AdapterGuid, request.AllowLoopback);
                 var fw = _executor.QueryFirewallGroupStatus(groupName);
+                var tcpOnly = TcpOnlyStatus(groupName + ".TcpOnly");
                 return new
                 {
                     ok = true,
@@ -176,8 +194,17 @@ internal sealed class HelperCommandDispatcher
                     firewallApiOk = fw.ApiOk,
                     firewallActiveRuleCount = fw.ActiveRuleCount,
                     firewallDetail = fw.Detail,
+                    firewallPolicyEffective = fw.PolicyEffective,
+                    tcpOnlyState = tcpOnly.State,
+                    tcpOnlyDetail = tcpOnly.Detail,
                     helperDetail = $"受限命名管道在线（PID={_executor.CurrentProcessId}，组={groupName}）"
                 };
+            }
+
+            if (request.Command == "tcp-only-status")
+            {
+                var status = TcpOnlyStatus(groupName + ".TcpOnly");
+                return new { ok = true, tcpOnlyState = status.State, tcpOnlyDetail = status.Detail, detail = status.Detail };
             }
 
             if (request.Command == "get-timezone")
@@ -207,6 +234,37 @@ internal sealed class HelperCommandDispatcher
             await _mutationLock.WaitAsync();
             try
             {
+                if (request.Command == "tcp-only-enable")
+                {
+                    Interlocked.Exchange(ref _tcpOnlyRefreshPending, 1);
+                    var existing = _executor.FindCurrentUserClaudeProcesses()
+                        .Where(process => string.Equals(process.UserSid, sid, StringComparison.OrdinalIgnoreCase))
+                        .Select(process => process.ProcessId).ToArray();
+                    var (_, oldRemaining) = await _executor.TerminateProcessesAsync(existing);
+                    if (oldRemaining > 0)
+                        return new { ok = false, error = "既有 Claude 会话未退出，TCP-only 刷新已中止", tcpOnlyState = "stale" };
+                    var status = await _executor.EnableTcpOnlyAsync(groupName + ".TcpOnly");
+                    var pids = _executor.FindCurrentUserClaudeProcesses()
+                        .Where(process => string.Equals(process.UserSid, sid, StringComparison.OrdinalIgnoreCase))
+                        .Select(process => process.ProcessId).ToArray();
+                    var (_, remaining) = status.State == "active"
+                        ? await _executor.TerminateProcessesAsync(pids) : (0, 0);
+                    var after = _executor.QueryTcpOnlyStatus(groupName + ".TcpOnly");
+                    if (status.State == "active" && after.State == "active" && remaining == 0)
+                        Interlocked.Exchange(ref _tcpOnlyRefreshPending, 0);
+                    return new { ok = status.State == "active" && after.State == "active" && remaining == 0,
+                        tcpOnlyState = remaining > 0 ? "stale" : after.State,
+                        tcpOnlyDetail = after.Detail,
+                        error = remaining > 0 ? "既有 Claude 会话未退出，拒绝宣称 TCP-only 已完成" : after.Detail,
+                        detail = after.Detail };
+                }
+                if (request.Command == "tcp-only-disable")
+                {
+                    await _executor.DisableTcpOnlyAsync(groupName + ".TcpOnly");
+                    var after = _executor.QueryTcpOnlyStatus(groupName + ".TcpOnly");
+                    return new { ok = after.State == "off", tcpOnlyState = after.State, tcpOnlyDetail = after.Detail,
+                        detail = after.Detail, error = "TCP-only 托管规则未能清理" };
+                }
                 var paths = (request.Paths ?? Array.Empty<string>())
                     .Where(_executor.IsAllowedClaudePath)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
@@ -381,7 +439,7 @@ internal sealed class HelperCommandDispatcher
     }
 }
 
-internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
+internal sealed partial class WindowsHelperSystemExecutor : IHelperSystemExecutor
 {
     [DllImport("dnsapi.dll", EntryPoint = "DnsFlushResolverCache")]
     private static extern bool DnsFlushResolverCache();
@@ -404,43 +462,8 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
 
     public HelperFirewallStatus QueryFirewallGroupStatus(string groupName)
     {
-        try
-        {
-            const string rulesSubKey = @"SYSTEM\CurrentControlSet\Services\SharedAccess\Parameters\FirewallPolicy\FirewallRules";
-            using var key = Registry.LocalMachine.OpenSubKey(rulesSubKey, writable: false);
-            if (key is null)
-            {
-                return new HelperFirewallStatus(false, 0, "无法打开 Windows 防火墙规则注册表键");
-            }
-
-            var count = 0;
-            var groupMarker = $"EmbedCtxt={groupName}";
-            var namePrefix = $"Name={groupName}.";
-            foreach (var valueName in key.GetValueNames())
-            {
-                var raw = key.GetValue(valueName) as string;
-                if (string.IsNullOrEmpty(raw))
-                {
-                    continue;
-                }
-
-                if ((raw.Contains(groupMarker, StringComparison.OrdinalIgnoreCase) ||
-                     raw.Contains(namePrefix, StringComparison.OrdinalIgnoreCase)) &&
-                    raw.Contains("Active=TRUE", StringComparison.OrdinalIgnoreCase))
-                {
-                    count++;
-                }
-            }
-
-            var detail = count > 0
-                ? $"防火墙组 {groupName} 当前有 {count} 条活动阻断规则"
-                : $"防火墙控制就绪（组 {groupName} 当前无阻断规则）";
-            return new HelperFirewallStatus(true, count, detail);
-        }
-        catch (Exception ex)
-        {
-            return new HelperFirewallStatus(false, 0, $"读取防火墙规则状态失败：{ex.Message}");
-        }
+        var evidence = _firewall.Read(groupName);
+        return new(evidence.Readable, evidence.Rules.Count(rule => rule.Enabled), evidence.Detail, evidence.Effective);
     }
 
     public async Task ClearFirewallGroupAsync(string groupName)
@@ -449,7 +472,7 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
         var script = string.Join(
             Environment.NewLine,
             "$ErrorActionPreference = 'Stop'",
-            $"$rules = @(Get-NetFirewallRule -Group '{escapedGroupName}' -ErrorAction SilentlyContinue)",
+            $"$rules = @(Get-NetFirewallRule -ErrorAction Stop | Where-Object {{ $_.Group -eq '{escapedGroupName}' -and $_.DisplayName -match ('^' + [regex]::Escape('{escapedGroupName}') + '\\.[0-9A-Fa-f]{{16}}$') }})",
             "if ($rules.Count -gt 0) {",
             "    $rules | Remove-NetFirewallRule -ErrorAction Stop",
             "}",
@@ -459,15 +482,9 @@ internal sealed class WindowsHelperSystemExecutor : IHelperSystemExecutor
 
     public async Task ClearAllGuardianFirewallRulesAsync(string rulePrefix)
     {
-        var escapedPrefix = EscapePowerShellString(rulePrefix);
-        var script = string.Join(
-            Environment.NewLine,
-            "$ErrorActionPreference = 'Stop'",
-            $"$rules = @(Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {{ $_.Group -like '{escapedPrefix}*' -or $_.DisplayName -like '{escapedPrefix}*' }})",
-            "if ($rules.Count -gt 0) {",
-            "    $rules | Remove-NetFirewallRule -ErrorAction Stop",
-            "}");
-        await RunPowerShellEncodedAsync(script);
+        var group = rulePrefix + CurrentUserSid.Replace('\\', '_');
+        await ClearFirewallGroupAsync(group);
+        await DisableTcpOnlyAsync(group + ".TcpOnly");
     }
 
     public Task AddFirewallBlockRuleAsync(string ruleName, string groupName, string programPath) =>
