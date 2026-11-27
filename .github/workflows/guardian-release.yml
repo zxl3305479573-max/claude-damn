@@ -1,4 +1,4 @@
-name: Claude Desktop Guardian Release
+name: claude-damn Release
 
 on:
   push:
@@ -40,23 +40,23 @@ jobs:
       - name: Test and publish shared runtime package
         shell: pwsh
         run: |
-          dotnet run --project claude-desktop-guardian/tests/ClaudeDesktopGuardian.Tests.csproj -c Release
+          dotnet run --project tests/ClaudeDesktopGuardian.Tests.csproj -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           $packageRoot = Join-Path $env:RUNNER_TEMP "ClaudeDesktopGuardian-$env:VERSION"
           New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
-          dotnet publish claude-desktop-guardian/src/ClaudeDesktopGuardian.Helper/ClaudeDesktopGuardian.Helper.csproj `
+          dotnet publish src/ClaudeDesktopGuardian.Helper/ClaudeDesktopGuardian.Helper.csproj `
             -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
             "-p:Version=$env:VERSION" -o $packageRoot
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet publish claude-desktop-guardian/src/ClaudeDesktopGuardian.Cli/ClaudeDesktopGuardian.Cli.csproj `
+          dotnet publish src/ClaudeDesktopGuardian.Cli/ClaudeDesktopGuardian.Cli.csproj `
             -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
             "-p:Version=$env:VERSION" -o $packageRoot
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet publish claude-desktop-guardian/src/ClaudeDesktopGuardian.App/ClaudeDesktopGuardian.App.csproj `
+          dotnet publish src/ClaudeDesktopGuardian.App/ClaudeDesktopGuardian.App.csproj `
             -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false `
             "-p:Version=$env:VERSION" -o $packageRoot
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          Copy-Item -LiteralPath claude-desktop-guardian/apply-update.ps1 -Destination $packageRoot
+          Copy-Item -LiteralPath apply-update.ps1 -Destination $packageRoot
           Set-Content -LiteralPath (Join-Path $packageRoot 'VERSION') -Value $env:VERSION -Encoding ascii
           $app = Join-Path $packageRoot 'ClaudeDesktopGuardian.App.exe'
           $helper = Join-Path $packageRoot 'ClaudeDesktopGuardian.Helper.exe'
@@ -82,6 +82,6 @@ jobs:
           }
           else {
             gh release create $tag $package $checksums --repo $env:GH_REPO `
-              --generate-notes --title "Claude Desktop Guardian v$env:VERSION"
+              --generate-notes --title "claude-damn v$env:VERSION"
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

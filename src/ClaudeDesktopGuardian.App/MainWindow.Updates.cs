@@ -32,7 +32,7 @@ public partial class MainWindow
         }
 
         var choice = WpfMessageBox.Show(
-            $"发现 Guardian v{_availableUpdate.Version}。现在下载并安装吗？",
+            $"发现 claude-damn v{_availableUpdate.Version}。现在下载并安装吗？",
             "发现更新",
             MessageBoxButton.YesNo,
             MessageBoxImage.Question);

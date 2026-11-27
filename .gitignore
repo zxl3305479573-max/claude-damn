@@ -1,7 +1,9 @@
 **/bin/
 **/obj/
-claude-desktop-guardian/publish/
+publish/
+build/
 *.user
 *.suo
 *.tmp
 .vs/
+*.log

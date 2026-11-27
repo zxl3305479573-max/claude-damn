@@ -1,8 +1,0 @@
-bin/
-obj/
-build/
-publish/
-.vs/
-*.user
-*.suo
-*.log

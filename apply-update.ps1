@@ -57,7 +57,7 @@ function Show-UpdateFailure([string]$Message) {
         Add-Type -AssemblyName PresentationFramework
         [System.Windows.MessageBox]::Show(
             $Message,
-            'Claude Desktop Guardian 更新失败',
+            'claude-damn 更新失败',
             [System.Windows.MessageBoxButton]::OK,
             [System.Windows.MessageBoxImage]::Warning) | Out-Null
     }
@@ -239,7 +239,7 @@ try {
     }
 
     Remove-Item -LiteralPath $packageDirectory -Recurse -Force -ErrorAction SilentlyContinue
-    Write-Output "Claude Desktop Guardian v$version 更新完成；回滚版本保留在 $backupRoot。"
+    Write-Output "claude-damn v$version 更新完成；回滚版本保留在 $backupRoot。"
 }
 catch {
     $failure = $_.Exception.Message

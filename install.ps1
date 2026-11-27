@@ -1,7 +1,7 @@
 ﻿param(
     [switch]$Uninstall,
     [switch]$SkipBuild,
-    [string]$InstallDir = (Join-Path $env:ProgramFiles 'ClaudeDesktopGuardian')
+    [string]$InstallDir = 'D:\Apps\claude-damn'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -11,7 +11,7 @@ if ([string]::IsNullOrWhiteSpace($installRoot)) {
     throw 'InstallDir 不能为空。'
 }
 $userState = Join-Path $env:LOCALAPPDATA 'ClaudeDesktopGuardian'
-$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Claude Desktop Guardian.lnk'
+$shortcutPath = Join-Path ([Environment]::GetFolderPath('Desktop')) 'claude-damn.lnk'
 
 if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
     [Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -93,8 +93,8 @@ $shortcut = $shell.CreateShortcut($shortcutPath)
 $shortcut.TargetPath = $app
 $shortcut.WorkingDirectory = $installRoot
 $shortcut.IconLocation = "$app,0"
-$shortcut.Description = 'Claude Desktop Guardian 网络守护'
+$shortcut.Description = 'claude-damn 网络守护'
 $shortcut.Save()
 
-Write-Host "安装完成：Claude Desktop Guardian（$installRoot）" -ForegroundColor Green
+Write-Host "安装完成：claude-damn（$installRoot）" -ForegroundColor Green
 

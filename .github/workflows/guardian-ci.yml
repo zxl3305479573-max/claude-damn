@@ -1,15 +1,25 @@
-name: Claude Desktop Guardian CI
+name: claude-damn CI
 
 on:
   pull_request:
     paths:
-      - "claude-desktop-guardian/**"
       - ".github/workflows/guardian-ci.yml"
+      - "*.md"
+      - "*.ps1"
+      - ".gitignore"
+      - "docs/**"
+      - "src/**"
+      - "tests/**"
   push:
     branches: [main]
     paths:
-      - "claude-desktop-guardian/**"
       - ".github/workflows/guardian-ci.yml"
+      - "*.md"
+      - "*.ps1"
+      - ".gitignore"
+      - "docs/**"
+      - "src/**"
+      - "tests/**"
   workflow_dispatch:
 
 permissions:
@@ -33,22 +43,22 @@ jobs:
           dotnet-version: 8.0.x
 
       - name: Core regression tests
-        run: dotnet run --project claude-desktop-guardian/tests/ClaudeDesktopGuardian.Tests.csproj -c Release
+        run: dotnet run --project tests/ClaudeDesktopGuardian.Tests.csproj -c Release
 
       - name: Build app, helper, and CLI
         run: |
-          dotnet build claude-desktop-guardian/src/ClaudeDesktopGuardian.App/ClaudeDesktopGuardian.App.csproj -c Release
+          dotnet build src/ClaudeDesktopGuardian.App/ClaudeDesktopGuardian.App.csproj -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet build claude-desktop-guardian/src/ClaudeDesktopGuardian.Helper/ClaudeDesktopGuardian.Helper.csproj -c Release
+          dotnet build src/ClaudeDesktopGuardian.Helper/ClaudeDesktopGuardian.Helper.csproj -c Release
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          dotnet build claude-desktop-guardian/src/ClaudeDesktopGuardian.Cli/ClaudeDesktopGuardian.Cli.csproj -c Release
+          dotnet build src/ClaudeDesktopGuardian.Cli/ClaudeDesktopGuardian.Cli.csproj -c Release
           exit $LASTEXITCODE
         shell: pwsh
 
       - name: Validate OTA updater script
         shell: pwsh
         run: |
-          $path = 'claude-desktop-guardian/apply-update.ps1'
+          $path = 'apply-update.ps1'
           $bytes = [IO.File]::ReadAllBytes($path)
           if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
             throw 'OTA updater must be UTF-8 with BOM.'

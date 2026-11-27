@@ -3,7 +3,7 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:core="clr-namespace:ClaudeDesktopGuardian.Core;assembly=ClaudeDesktopGuardian.Core"
         xmlns:wv2="clr-namespace:Microsoft.Web.WebView2.Wpf;assembly=Microsoft.Web.WebView2.Wpf"
-        Title="Claude Desktop Guardian"
+        Title="claude-damn"
         Icon="Assets/claude-desktop-guardian.ico"
         Width="1240"
         Height="830"
@@ -23,7 +23,7 @@
         <!-- Header -->
         <DockPanel Grid.Row="0" LastChildFill="False" Margin="0,0,0,14">
             <StackPanel DockPanel.Dock="Left">
-                <TextBlock Text="Claude Desktop Guardian" FontSize="24" FontWeight="Bold"/>
+                <TextBlock Text="claude-damn" FontSize="24" FontWeight="Bold"/>
                 <TextBlock Text="VPN / TUN / WFP 内核锁 / DNS / WebRTC / 多账号守护"
                            Foreground="{StaticResource MutedBrush}"
                            FontSize="12.5"

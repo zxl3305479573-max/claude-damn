@@ -1,6 +1,6 @@
-# Claude Desktop Guardian
+# claude-damn
 
-Windows 上的 Claude Desktop 网络守护与多账号安全工作台（.NET 8 / WPF 原生实现，完整融合 Windows 版 `claude-switcher` 与 `Claude Desktop Guardian` 能力，支持 GitHub Release OTA 更新）。
+Windows 上的 Claude Desktop 网络守护与多账号安全工作台（.NET 8 / WPF 原生实现，项目名与 GitHub 仓库统一为 `claude-damn`，支持 GitHub Release OTA 更新）。
 
 ## 核心能力
 
@@ -80,13 +80,13 @@ Guardian 的「安全启动 Claude」及切换账号后的自动启动会传入 
 正式运行需要系统安装 Microsoft Edge WebView2 Runtime。`build.ps1` 会将 `App.exe`、`Helper.exe` 与 `Cli.exe` 发布到同一 `publish\win-x64` 目录共享单份 .NET 8 运行时（总体积约 164 MB）。使用管理员 PowerShell 安装或卸载：
 
 ```powershell
-# 默认安装到 C:\Program Files\ClaudeDesktopGuardian（支持 -InstallDir 自定义磁盘路径）
+# 默认安装到 D:\Apps\claude-damn（支持 -InstallDir 自定义磁盘路径）
 .\install.ps1
-.\install.ps1 -InstallDir D:\ClaudeDesktopGuardian
+.\install.ps1 -InstallDir D:\Apps\claude-damn
 
 # 卸载（先通过 Helper --cleanup-all 清理 WFP、防火墙规则并恢复临时时区，保留用户账号存档）
 .\install.ps1 -Uninstall
-.\install.ps1 -Uninstall -InstallDir D:\ClaudeDesktopGuardian
+.\install.ps1 -Uninstall -InstallDir D:\Apps\claude-damn
 ```
 
 开发阶段可以先启动管理员助手，再启动 WPF 主程序：
@@ -96,4 +96,4 @@ dotnet run --project src\ClaudeDesktopGuardian.Helper\ClaudeDesktopGuardian.Help
 dotnet run --project src\ClaudeDesktopGuardian.App\ClaudeDesktopGuardian.App.csproj
 ```
 
-点击窗口右上角关闭会隐藏到系统托盘；请从托盘菜单选择“退出并恢复时区与网络策略”以干净恢复原 Windows 时区、清理 Guardian 防火墙规则并移除 WFP 出站锁。
+点击窗口右上角关闭会隐藏到系统托盘；请从托盘菜单选择“退出并恢复时区与网络策略”以干净恢复原 Windows 时区、清理 claude-damn 防火墙规则并移除 WFP 出站锁。

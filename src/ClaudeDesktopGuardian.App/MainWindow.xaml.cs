@@ -82,7 +82,7 @@ public partial class MainWindow : Window
         _trayIcon = new NotifyIcon
         {
             Icon = LoadTrayIcon(),
-            Text = "Claude Desktop Guardian",
+            Text = "claude-damn",
             Visible = true,
             ContextMenuStrip = new ContextMenuStrip()
         };

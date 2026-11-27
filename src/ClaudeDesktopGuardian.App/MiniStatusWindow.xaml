@@ -1,7 +1,7 @@
 <Window x:Class="ClaudeDesktopGuardian.App.MiniStatusWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Claude Desktop Guardian"
+        Title="claude-damn"
         Icon="Assets/claude-desktop-guardian.ico"
         Width="344"
         Height="182"
@@ -28,7 +28,7 @@
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <DockPanel Grid.Row="0">
-                <TextBlock Text="Claude Desktop Guardian"
+                <TextBlock Text="claude-damn"
                            Foreground="{StaticResource TextBrush}"
                            FontSize="13"
                            FontWeight="SemiBold"
