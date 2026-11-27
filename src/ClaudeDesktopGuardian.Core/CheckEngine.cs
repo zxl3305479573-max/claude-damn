@@ -1160,7 +1160,8 @@ public sealed class GuardianCheckEngine
             return Result(id, title, CheckStatus.Warn, blocking: false, $"非关键失败已降级（{detail}）");
         }
 
-        return Result(id, title, status, blockingWhenFail, detail);
+        var blocking = status == CheckStatus.Warn ? config.BlockOnWarning : blockingWhenFail;
+        return Result(id, title, status, blocking, detail);
     }
 
     private static CheckResult Skipped(string id, string title) =>

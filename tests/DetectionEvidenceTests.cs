@@ -65,11 +65,38 @@ internal static class DetectionEvidenceTests
                 healthy with { ClaudeHttps = new Dictionary<string, string> { ["api.anthropic.com"] = value } },
                 config with { ClaudeDomains = new[] { "api.anthropic.com" } });
             Check(result.Status == expected, "HTTPS " + value + " 分类错误");
+            if (expected == CheckStatus.Warn)
+                Check(!result.Blocking && result.Passed, "HTTPS " + value + " 警告默认不得阻断启动");
         }
+        probe.Snapshot = healthy with
+        {
+            ClaudeHttps = new Dictionary<string, string>
+            {
+                ["api.anthropic.com"] = "401",
+                ["platform.claude.com"] = "200",
+                ["claude.ai"] = "403",
+                ["claude.com"] = "200",
+                ["anthropic.com"] = "200"
+            },
+            ClashRulesStatus = "warn",
+            ClashRulesDetail = "代理组非标准命名",
+            IpReputation = new IpReputationRecord(DateTimeOffset.UtcNow, Score: 5, IsProxy: false, IsVpn: null, IsTor: false, IsHosting: false, BlacklistCount: 0)
+        };
+        var warnOnlyReport = await engine.RunAsync(
+            config with { IpReputation = new IpReputationConfig("https://rep.test/{ip}", "", 25, 7) }, true, default);
+        Check(warnOnlyReport.Checks.Single(c => c.Id == GuardianCheckIds.ClaudeDomains).Status == CheckStatus.Warn &&
+              warnOnlyReport.Checks.Single(c => c.Id == GuardianCheckIds.ClashRules).Status == CheckStatus.Warn &&
+              warnOnlyReport.Checks.Single(c => c.Id == GuardianCheckIds.IpRepProxy).Status == CheckStatus.Warn &&
+              ProtectionPolicyEvaluator.EvaluateLaunchGate(warnOnlyReport, false, false).Allowed &&
+              ProtectionPolicyEvaluator.Evaluate(warnOnlyReport, false, false).Action == ProtectionAction.None,
+            "OptionalResult 产生的 Warn（含 claude.ai=403、Clash 告警、信誉缺字段）默认不得阻断安全启动或急停 Claude");
+        var blockOnWarnReport = await engine.RunAsync(config with { BlockOnWarning = true }, true, default);
+        Check(!ProtectionPolicyEvaluator.EvaluateLaunchGate(blockOnWarnReport, false, false).Allowed,
+            "显式开启 BlockOnWarning 时，OptionalResult 的 Warn 应按配置阻断启动");
         var web401 = await Evaluate(GuardianCheckIds.ClaudeDomains,
             healthy with { ClaudeHttps = new Dictionary<string, string> { ["claude.ai"] = "401" } },
             config with { ClaudeDomains = new[] { "claude.ai" } });
-        Check(web401.Status == CheckStatus.Warn, "仅预期 API 401 可作为正常的需认证响应");
+        Check(web401.Status == CheckStatus.Warn && !web401.Blocking, "仅预期 API 401 可作为正常的需认证响应，且 401 警告默认不阻断");
         var partialHttps = await Evaluate(GuardianCheckIds.ClaudeDomains,
             healthy with { ClaudeHttps = new Dictionary<string, string> { ["api.anthropic.com"] = "200" } });
         Check(partialHttps.Status == CheckStatus.Unknown, "缺少必要域名响应不得误绿");
