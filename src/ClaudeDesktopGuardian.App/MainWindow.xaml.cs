@@ -703,17 +703,18 @@ public partial class MainWindow : Window
             if (!_blocked && _lastReport is { ProtectedProcesses.Count: > 0 } lastReport)
             {
                 var helperResult = await SendHelperAsync("apply-block", lastReport);
+                await TerminateClaudeWithLocalFallbackAsync(lastReport);
+                _blocked = true;
                 if (helperResult.Success)
                 {
-                    _blocked = true;
                     TripReasonText.Text = detail;
                     SaveGuardianState(true, detail, DateTimeOffset.UtcNow, lastReport.ObservedAt);
-                    await SendHelperAsync("terminate-tree", lastReport);
                     SetProtectionState("已阻断", "StatusWarnBackgroundBrush", "StatusWarnBrush");
                     return null;
                 }
 
-                detail = $"{detail}；阻断动作失败：{helperResult.Detail}";
+                detail = $"{detail}；防火墙阻断失败（已强制终止 Claude）：{helperResult.Detail}";
+                SaveGuardianState(true, detail, DateTimeOffset.UtcNow, lastReport.ObservedAt);
                 SetProtectionState("阻断失败", "StatusErrorBackgroundBrush", "StatusErrorBrush");
             }
             else if (_blocked)
@@ -730,6 +731,28 @@ public partial class MainWindow : Window
         }
     }
 
+    private async Task TerminateClaudeWithLocalFallbackAsync(GuardianReport report)
+    {
+        var termResult = await SendHelperAsync("terminate-tree", report);
+        if (termResult.Success)
+        {
+            return;
+        }
+
+        // Fail-Closed fallback: Claude Desktop runs under the current user token, so kill locally if Helper is unavailable
+        foreach (var proc in report.ProtectedProcesses)
+        {
+            try
+            {
+                using var process = Process.GetProcessById(proc.ProcessId);
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+            }
+        }
+    }
+
     private async Task ApplyProtectionDecisionAsync(GuardianReport report, bool allowClearBlock = false)
     {
         var decision = ProtectionPolicyEvaluator.Evaluate(report, _blocked, _ignoreWebRtc, allowClearBlock);
@@ -738,19 +761,22 @@ public partial class MainWindow : Window
             case ProtectionAction.ApplyBlockAndTerminate:
             {
                 var helperResult = await SendHelperAsync("apply-block", report);
+                await TerminateClaudeWithLocalFallbackAsync(report);
+                _blocked = true;
                 if (helperResult.Success)
                 {
-                    _blocked = true;
                     TripReasonText.Text = decision.TripReason;
                     SaveGuardianState(true, decision.TripReason, DateTimeOffset.UtcNow, report.ObservedAt);
-                    await SendHelperAsync("terminate-tree", report);
                     SetProtectionState("已阻断", "StatusWarnBackgroundBrush", "StatusWarnBrush");
                     _logger.LogAction("trip-block", "blocked", 0, report.Checks, _config.LoggingEnabled);
                 }
                 else
                 {
-                    TripReasonText.Text = $"{decision.TripReason}；阻断动作失败：{helperResult.Detail}";
+                    var failReason = $"{decision.TripReason}；防火墙阻断失败（已强制终止 Claude）：{helperResult.Detail}";
+                    TripReasonText.Text = failReason;
+                    SaveGuardianState(true, failReason, DateTimeOffset.UtcNow, report.ObservedAt);
                     SetProtectionState("阻断失败", "StatusErrorBackgroundBrush", "StatusErrorBrush");
+                    _logger.LogAction("trip-block", "block-failed-terminated", 0, report.Checks, _config.LoggingEnabled);
                 }
 
                 break;
@@ -758,7 +784,7 @@ public partial class MainWindow : Window
             case ProtectionAction.EnforceExistingBlockTerminateOnly:
             {
                 await SendHelperAsync("apply-block", report);
-                await SendHelperAsync("terminate-tree", report);
+                await TerminateClaudeWithLocalFallbackAsync(report);
                 TripReasonText.Text = decision.TripReason;
                 SaveGuardianState(true, decision.TripReason, DateTimeOffset.UtcNow, report.ObservedAt);
                 SetProtectionState("已阻断", "StatusWarnBackgroundBrush", "StatusWarnBrush");

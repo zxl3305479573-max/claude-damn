@@ -65,6 +65,10 @@ internal sealed partial class WindowsHelperSystemExecutor
         name.StartsWith(group + ".Managed.Udp.", StringComparison.OrdinalIgnoreCase) &&
         Regex.IsMatch(name[(group.Length + ".Managed.Udp.".Length)..], "\\A[0-9A-F]{16}\\z", RegexOptions.IgnoreCase);
 
+    internal static bool IsManagedBlockRule(string name, string group) =>
+        name.StartsWith(group + ".", StringComparison.OrdinalIgnoreCase) &&
+        Regex.IsMatch(name[(group.Length + 1)..], "\\A[0-9A-F]{16}\\z", RegexOptions.IgnoreCase);
+
     public HelperTcpOnlyStatus QueryTcpOnlyStatus(string groupName)
     {
         try
@@ -175,16 +179,18 @@ internal sealed class WindowsFirewallPolicyStore : IFirewallPolicyStore
             dynamic rule = ruleObject!;
             rule.Name = value.Name;
             rule.Grouping = value.Group;
-            rule.Description = "ClaudeDesktopGuardian managed outbound UDP policy";
+            rule.Description = value.Protocol == 17
+                ? "ClaudeDesktopGuardian managed outbound UDP policy"
+                : "ClaudeDesktopGuardian managed emergency outbound block";
             rule.Protocol = value.Protocol;
             if (value.Application.Length > 0) rule.ApplicationName = value.Application;
             if (value.PackageSid.Length > 0) rule.LocalAppPackageId = value.PackageSid;
-            rule.LocalUserAuthorizedList = value.LocalUsers;
+            if (value.LocalUsers.Length > 0) rule.LocalUserAuthorizedList = value.LocalUsers;
             rule.Direction = value.Direction;
             rule.Action = value.Action;
             rule.Profiles = value.Profiles;
-            rule.LocalPorts = value.LocalPorts;
-            rule.RemotePorts = value.RemotePorts;
+            if (value.LocalPorts.Length > 0) rule.LocalPorts = value.LocalPorts;
+            if (value.RemotePorts.Length > 0) rule.RemotePorts = value.RemotePorts;
             rule.LocalAddresses = value.LocalAddresses;
             rule.RemoteAddresses = value.RemoteAddresses;
             rule.InterfaceTypes = value.InterfaceTypes;

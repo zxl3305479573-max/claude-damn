@@ -53,6 +53,7 @@ internal interface IHelperSystemExecutor
     Task ClearFirewallGroupAsync(string groupName);
     Task ClearAllGuardianFirewallRulesAsync(string rulePrefix);
     Task AddFirewallBlockRuleAsync(string ruleName, string groupName, string programPath);
+    Task AddFirewallPackageBlockRuleAsync(string groupName) => Task.CompletedTask;
     Task<(int Terminated, int Remaining)> TerminateProcessesAsync(IReadOnlyList<int> processIds);
     HelperWfpStatus QueryWfpDetailedSafe(string? adapterGuid, bool allowLoopback);
     HelperWfpStatus QueryWfpDetailed(string? adapterGuid, bool allowLoopback);
@@ -292,13 +293,14 @@ internal sealed class HelperCommandDispatcher
                         .Distinct(StringComparer.OrdinalIgnoreCase)
                         .ToArray();
 
-                    // Idempotent clear before re-adding so repeated triggers never pile up duplicate netsh rules
+                    // Idempotent clear before re-adding so repeated triggers never pile up duplicate rules
                     await _executor.ClearFirewallGroupAsync(groupName);
                     foreach (var path in allBlockPaths)
                     {
                         var ruleName = groupName + "." + HashPath(path);
                         await _executor.AddFirewallBlockRuleAsync(ruleName, groupName, path);
                     }
+                    await _executor.AddFirewallPackageBlockRuleAsync(groupName);
 
                     return new { ok = true, command = request.Command, paths = allBlockPaths.Length, group = groupName };
                 }
@@ -479,18 +481,13 @@ internal sealed partial class WindowsHelperSystemExecutor : IHelperSystemExecuto
         return new(evidence.Readable, evidence.Rules.Count(rule => rule.Enabled), evidence.Detail, evidence.Effective);
     }
 
-    public async Task ClearFirewallGroupAsync(string groupName)
+    public Task ClearFirewallGroupAsync(string groupName)
     {
-        var escapedGroupName = EscapePowerShellString(groupName);
-        var script = string.Join(
-            Environment.NewLine,
-            "$ErrorActionPreference = 'Stop'",
-            $"$rules = @(Get-NetFirewallRule -ErrorAction Stop | Where-Object {{ $_.Group -eq '{escapedGroupName}' -and $_.DisplayName -match ('^' + [regex]::Escape('{escapedGroupName}') + '\\.[0-9A-Fa-f]{{16}}$') }})",
-            "if ($rules.Count -gt 0) {",
-            "    $rules | Remove-NetFirewallRule -ErrorAction Stop",
-            "}",
-            "Write-Output ('removed=' + $rules.Count)");
-        await RunPowerShellEncodedAsync(script);
+        var policy = _firewall.Read(groupName);
+        if (!policy.Readable) throw new InvalidOperationException(policy.Detail);
+        foreach (var rule in policy.Rules.Where(rule => IsManagedBlockRule(rule.Name, groupName)))
+            _firewall.Remove(rule.Name);
+        return Task.CompletedTask;
     }
 
     public async Task ClearAllGuardianFirewallRulesAsync(string rulePrefix)
@@ -500,17 +497,28 @@ internal sealed partial class WindowsHelperSystemExecutor : IHelperSystemExecuto
         await DisableTcpOnlyAsync(group + ".TcpOnly");
     }
 
-    public Task AddFirewallBlockRuleAsync(string ruleName, string groupName, string programPath) =>
-        RunProcessAsync(
-            "netsh.exe",
-            "advfirewall", "firewall", "add", "rule",
-            $"name={ruleName}",
-            $"group={groupName}",
-            "dir=out",
-            "action=block",
-            "enable=yes",
-            $"program={programPath}",
-            "profile=any");
+    public Task AddFirewallBlockRuleAsync(string ruleName, string groupName, string programPath)
+    {
+        _firewall.Add(new FirewallRuleEvidence(
+            ruleName, groupName, programPath, "", true, 2, 0, 256, 7, "", "", "*", "*", "All", false, "",
+            $"O:LSD:(A;;CC;;;{CurrentUserSid})"));
+        return Task.CompletedTask;
+    }
+
+    public Task AddFirewallPackageBlockRuleAsync(string groupName)
+    {
+        var install = _discoverTcpOnly();
+        if (string.IsNullOrWhiteSpace(install.PackageFamilyName)) return Task.CompletedTask;
+        Marshal.ThrowExceptionForHR(DeriveAppContainerSidFromAppContainerName(install.PackageFamilyName, out var pointer));
+        string packageSid;
+        try { packageSid = new SecurityIdentifier(pointer).Value; }
+        finally { FreeSid(pointer); }
+        var ruleName = groupName + "." + HelperCommandDispatcher.HashPath("|" + packageSid);
+        _firewall.Add(new FirewallRuleEvidence(
+            ruleName, groupName, "", packageSid, true, 2, 0, 256, 7, "", "", "*", "*", "All", false, "",
+            $"O:LSD:(A;;CC;;;{CurrentUserSid})"));
+        return Task.CompletedTask;
+    }
 
     public async Task<(int Terminated, int Remaining)> TerminateProcessesAsync(IReadOnlyList<int> processIds)
     {

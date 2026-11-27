@@ -316,6 +316,24 @@ internal static class DetectionEvidenceTests
         Check((await msix.EnableTcpOnlyAsync(group)).State == "active" && msixStore.Rules.Count == 2 &&
               msixStore.Rules.Any(rule => rule.Application == "" && rule.PackageSid.StartsWith("S-1-15-2-")),
             "MSIX 包 SID 与 EXE 身份必须同时覆盖");
+        var blockGroup = "ClaudeDesktopGuardian.synthetic";
+        var blockRuleName = blockGroup + "." + HelperCommandDispatcher.HashPath(installation.Version2);
+        await msix.AddFirewallBlockRuleAsync(blockRuleName, blockGroup, installation.Version2);
+        await msix.AddFirewallPackageBlockRuleAsync(blockGroup);
+        var emergencyRules = msixStore.Rules.Where(rule => rule.Group == blockGroup).ToArray();
+        Check(emergencyRules.Length == 2 &&
+              emergencyRules.All(rule => rule.Protocol == 256 && rule.Direction == 2 && rule.Action == 0 &&
+                                         rule.Profiles == 7 && rule.LocalPorts == "" && rule.RemotePorts == "" &&
+                                         rule.LocalUsers.StartsWith("O:LSD:(A;;CC;;;", StringComparison.Ordinal)) &&
+              emergencyRules.Any(rule => rule.Application == installation.Version2 && rule.PackageSid == "") &&
+              emergencyRules.Any(rule => rule.Application == "" && rule.PackageSid.StartsWith("S-1-15-2-")),
+            "紧急防火墙阻断应通过 COM 写入全协议(256)且覆盖 EXE 与 MSIX 包身份");
+        msixStore.Rules.Add(emergencyRules[0] with { Name = "manual-block-rule" });
+        await msix.ClearFirewallGroupAsync(blockGroup);
+        Check(msixStore.Rules.Count(rule => rule.Group == blockGroup) == 1 &&
+              msixStore.Rules.Single(rule => rule.Group == blockGroup).Name == "manual-block-rule" &&
+              msixStore.Rules.Count(rule => rule.Group == group) == 2,
+            "清理紧急阻断组必须移除托管阻断规则，同时保留手工规则与 TCP-only 组规则");
 
         var fake = new FakeHelperExecutor { IncludeEmptySidProcess = true };
         var dispatcher = new HelperCommandDispatcher(fake);
