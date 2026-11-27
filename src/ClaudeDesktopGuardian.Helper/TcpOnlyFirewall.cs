@@ -46,7 +46,7 @@ internal sealed partial class WindowsHelperSystemExecutor
         return targets.Select(target => new FirewallRuleEvidence(
             group + ".Managed.Udp." + HelperCommandDispatcher.HashPath(target.Path + "|" + target.Package), group,
             target.Path, target.Package, true, 2, 0, 17, 7, "*", "*", "*", "*", "All", false, "",
-            $"D:(A;;CC;;;{CurrentUserSid})")).ToArray();
+            $"O:LSD:(A;;CC;;;{CurrentUserSid})")).ToArray();
     }
 
     internal static bool RuleMatches(FirewallRuleEvidence actual, FirewallRuleEvidence expected) =>
@@ -57,7 +57,8 @@ internal sealed partial class WindowsHelperSystemExecutor
         actual.Enabled && actual.Direction == 2 && actual.Action == 0 && actual.Protocol == 17 && actual.Profiles == 7 &&
         actual.LocalPorts == "*" && actual.RemotePorts == "*" && actual.LocalAddresses == "*" && actual.RemoteAddresses == "*" &&
         actual.InterfaceTypes.Equals("All", StringComparison.OrdinalIgnoreCase) && !actual.InterfaceRestricted &&
-        string.IsNullOrEmpty(actual.ServiceName) && actual.LocalUsers == expected.LocalUsers &&
+        string.IsNullOrEmpty(actual.ServiceName) &&
+        string.Equals(actual.LocalUsers, expected.LocalUsers, StringComparison.OrdinalIgnoreCase) &&
         string.IsNullOrEmpty(actual.RemoteUsers) && string.IsNullOrEmpty(actual.RemoteMachines) && actual.SecureFlags == 0;
 
     internal static bool IsManagedUdpRule(string name, string group) =>
@@ -89,10 +90,9 @@ internal sealed partial class WindowsHelperSystemExecutor
         var policy = _firewall.Read(groupName);
         if (!policy.Readable || policy.Effective != true)
             return Task.FromResult(new HelperTcpOnlyStatus("unknown", policy.Detail));
+        foreach (var existing in policy.Rules.Where(rule => IsManagedUdpRule(rule.Name, groupName)))
+            _firewall.Remove(existing.Name);
         foreach (var rule in expected) _firewall.Add(rule);
-        foreach (var old in policy.Rules.Where(rule => IsManagedUdpRule(rule.Name, groupName) &&
-                     !expected.Any(target => target.Name.Equals(rule.Name, StringComparison.OrdinalIgnoreCase))))
-            _firewall.Remove(old.Name);
         return Task.FromResult(QueryTcpOnlyStatus(groupName));
     }
 
@@ -113,6 +113,10 @@ internal sealed partial class WindowsHelperSystemExecutor
 
 internal sealed class WindowsFirewallPolicyStore : IFirewallPolicyStore
 {
+    // 0 = NET_FW_MODIFY_STATE_OK; 2 = NET_FW_MODIFY_STATE_INBOUND_BLOCKED (still enforces outbound block rules);
+    // 1 = NET_FW_MODIFY_STATE_GP_OVERRIDE (Group Policy overrides local rules).
+    internal static bool IsLocalPolicyStateEffective(int modifyState) => modifyState is 0 or 2;
+
     public FirewallPolicyEvidence Read(string group)
     {
         object? instance = null;
@@ -121,7 +125,7 @@ internal sealed class WindowsFirewallPolicyStore : IFirewallPolicyStore
             instance = Activator.CreateInstance(Type.GetTypeFromProgID("HNetCfg.FwPolicy2", throwOnError: true)!);
             dynamic policy = instance!;
             var active = (int)policy.CurrentProfileTypes;
-            var effective = active != 0 && (int)policy.LocalPolicyModifyState == 0 &&
+            var effective = active != 0 && IsLocalPolicyStateEffective((int)policy.LocalPolicyModifyState) &&
                 ServiceRunning("BFE") && ServiceRunning("MpsSvc");
             foreach (var (flag, name) in new[] { (1, "DomainProfile"), (2, "PrivateProfile"), (4, "PublicProfile") })
             {

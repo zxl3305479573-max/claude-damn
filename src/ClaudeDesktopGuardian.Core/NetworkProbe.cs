@@ -144,13 +144,13 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
         var currentWindowsTimezone = TimeZoneInfo.Local.Id;
         var currentLocale = CultureInfo.CurrentCulture.Name;
 
-        var hasAdapterIpv6 = HasIpv6Route(adapter);
         PrepareEvidence(adapter, protectedProcesses, config);
         if (_contextChanged || EgressRefreshDue())
         {
             var refreshed = await CaptureNetworkAsync(config, protectedProcesses, true, cancellationToken);
             return refreshed with { ContextChanged = true };
         }
+        var hasAdapterIpv6 = _adapterHasIpv6Route;
         var publicIpv6Routes = _publicIpv6Routes;
         var hasIpv6 = hasAdapterIpv6 || publicIpv6Routes.Count > 0;
 
@@ -288,6 +288,7 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
                     _lastTimezone = tz;
                 }
 
+                MarkObserved(GuardianCheckIds.Timezone, tz is not null, tz is null ? "无法根据当前出口解析时区" : "");
                 snapshot = snapshot with
                 {
                     ExitTimezone = tz?.IanaId ?? string.Empty,
@@ -348,6 +349,9 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
             {
                 var clash = await _clashInspector.InspectAsync(config, cancellationToken);
                 _lastClashAudit = clash;
+                MarkObserved(GuardianCheckIds.ClashRules,
+                    !string.Equals(clash.Status, "unknown", StringComparison.OrdinalIgnoreCase),
+                    clash.Detail);
                 snapshot = snapshot with
                 {
                     ClashMode = clash.Mode,
@@ -381,6 +385,7 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
                     snapshot = snapshot with { AsnOrg = asn.Org, AsnType = asn.Type, AsnDetail = asn.Detail };
                 }
 
+                MarkObserved(GuardianCheckIds.Asn, !string.IsNullOrWhiteSpace(snapshot.AsnOrg), snapshot.AsnDetail);
                 break;
             }
             case GuardianCheckIds.ClaudeDomains:
@@ -411,13 +416,21 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
                     };
                 }
 
+                IpReputationRecord? ipRepRec = null;
+                var ipRepErr = config.IpReputation is null || string.IsNullOrWhiteSpace(config.IpReputation.Url)
+                    ? "未配置信誉数据源"
+                    : "缺少出口 IP，无法查询信誉数据源";
                 if (config.IpReputation is not null && !string.IsNullOrWhiteSpace(config.IpReputation.Url) && !string.IsNullOrWhiteSpace(exitIp))
                 {
-                    var (rec, err) = await _ipReputationService.LookupAsync(exitIp, config.IpReputation, DateTimeOffset.UtcNow, cancellationToken);
-                    _lastIpReputation = rec;
-                    _lastIpReputationError = err;
-                    snapshot = snapshot with { IpReputation = rec, IpReputationError = err };
+                    (ipRepRec, ipRepErr) = await _ipReputationService.LookupAsync(exitIp, config.IpReputation, DateTimeOffset.UtcNow, cancellationToken);
+                    _lastIpReputation = ipRepRec;
+                    _lastIpReputationError = ipRepErr;
+                    snapshot = snapshot with { IpReputation = ipRepRec, IpReputationError = ipRepErr };
                 }
+
+                foreach (var repId in GuardianCheckIds.IpReputationIds)
+                    _observations[repId] = new(ipRepRec is not null, ipRepRec?.CheckedAt ?? _clock.UtcNow,
+                        ipRepErr, ipRepRec is not null && ipRepRec.CheckedAt < _cycleStartedAt);
 
                 break;
             }
@@ -425,7 +438,9 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
 
         if (normalizedId is not (GuardianCheckIds.Dns or GuardianCheckIds.ClaudeDomains or GuardianCheckIds.EgressIp or
             GuardianCheckIds.IpConsistency or GuardianCheckIds.Ipv6 or GuardianCheckIds.ActiveConnections or GuardianCheckIds.DefaultRoute or
-            GuardianCheckIds.HelperService or GuardianCheckIds.FirewallReadiness or GuardianCheckIds.WfpPolicy or GuardianCheckIds.TcpOnlyPolicy))
+            GuardianCheckIds.HelperService or GuardianCheckIds.FirewallReadiness or GuardianCheckIds.WfpPolicy or GuardianCheckIds.TcpOnlyPolicy or
+            GuardianCheckIds.Timezone or GuardianCheckIds.ClashRules or GuardianCheckIds.Asn or
+            GuardianCheckIds.IpRepScore or GuardianCheckIds.IpRepProxy or GuardianCheckIds.IpRepHosting or GuardianCheckIds.IpRepBlacklist))
             MarkObserved(normalizedId, true);
         return CompleteEvidence(snapshot);
     }
@@ -454,9 +469,9 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
         var currentWindowsTimezone = TimeZoneInfo.Local.Id;
         var currentLocale = CultureInfo.CurrentCulture.Name;
 
-        var hasAdapterIpv6 = HasIpv6Route(adapter);
         PrepareEvidence(adapter, protectedProcesses, config, refreshDestinations: full);
         full |= _contextChanged;
+        var hasAdapterIpv6 = _adapterHasIpv6Route;
         var publicIpv6Routes = _publicIpv6Routes;
         var hasIpv6 = hasAdapterIpv6 || publicIpv6Routes.Count > 0;
 
@@ -497,21 +512,23 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
         _lastSystemProxyUri = systemProxyUri;
 
         // Run network probes through the verified active VPN/TUN path
+        using var roundCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var roundToken = roundCts.Token;
         var runIpv4 = full || EgressRefreshDue();
         var traceTask = runIpv4
-            ? ProbeIpv4EgressMultiSourceAsync(Http, cancellationToken)
+            ? ProbeIpv4EgressMultiSourceAsync(Http, roundToken)
             : Task.FromResult(_lastIpv4Trace);
 
         var tunDirectTask = !systemProxyConfigured
             ? Task.FromResult(TraceResolution.Empty)
             : runIpv4 || string.IsNullOrWhiteSpace(_lastTunDirectTrace.Ip)
-                ? ProbeIpv4EgressMultiSourceAsync(DirectTunHttp, cancellationToken)
+                ? ProbeIpv4EgressMultiSourceAsync(DirectTunHttp, roundToken)
                 : Task.FromResult(_lastTunDirectTrace);
 
         var ipv6TraceTask = !full
             ? Task.FromResult(_lastIpv6Trace)
             : hasAdapterIpv6
-                ? TryGetCloudflareTraceAsync(Ipv6Http, AddressFamily.InterNetworkV6, cancellationToken)
+                ? TryGetCloudflareTraceAsync(Ipv6Http, AddressFamily.InterNetworkV6, roundToken)
                 : Task.FromResult(TraceResolution.Empty);
 
         var runStun = !config.IsCheckDisabled(GuardianCheckIds.WebRtc) &&
@@ -519,19 +536,19 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
         var stunTask = config.IsCheckDisabled(GuardianCheckIds.WebRtc)
             ? Task.FromResult<IReadOnlyList<StunResult>>(Array.Empty<StunResult>())
             : runStun
-                ? ProbeStunAsync(config.EffectiveStunServers, hasAdapterIpv6, cancellationToken)
+                ? ProbeStunAsync(config.EffectiveStunServers, hasAdapterIpv6, roundToken)
                 : Task.FromResult(_lastStunResults);
 
         var dnsTask = full && !config.IsCheckDisabled(GuardianCheckIds.Dns)
-            ? ProbeClaudeDnsAsync(cancellationToken)
+            ? ProbeClaudeDnsAsync(roundToken)
             : Task.FromResult((_lastResolvedClaudeIps, _lastDnsDetail));
 
         var claudeTask = full && !config.IsCheckDisabled(GuardianCheckIds.ClaudeDomains)
-            ? ProbeClaudeHttpsAsync(config.EffectiveClaudeDomains, cancellationToken)
+            ? ProbeClaudeHttpsAsync(config.EffectiveClaudeDomains, roundToken)
             : Task.FromResult(_lastClaudeHttps);
 
         Task<ClashAuditResult?> clashTask = full && !config.IsCheckDisabled(GuardianCheckIds.ClashRules)
-            ? InspectClashNullableAsync(config, cancellationToken)
+            ? InspectClashNullableAsync(config, roundToken)
             : Task.FromResult(_lastClashAudit);
 
         var trace = await traceTask;
@@ -542,6 +559,7 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
             MarkObserved(GuardianCheckIds.EgressIp, !string.IsNullOrWhiteSpace(trace.Ip), trace.Detail);
             if (exitChanged && !full)
             {
+                roundCts.Cancel();
                 InvalidateCachedEvidence();
                 return await CaptureNetworkAsync(config, protectedProcesses, true, cancellationToken);
             }
@@ -551,6 +569,7 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
         if (!full && runIpv4 && systemProxyConfigured && EvidenceFreshness.EgressBaselineChanged(
             _lastTunDirectTrace.Ip, _lastTunDirectTrace.Country, tunDirectTrace.Ip, tunDirectTrace.Country))
         {
+            roundCts.Cancel();
             InvalidateCachedEvidence();
             return await CaptureNetworkAsync(config, protectedProcesses, true, cancellationToken);
         }
@@ -1442,7 +1461,7 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
         return (string.Empty, string.Empty);
     }
 
-    private static bool HasIpv6Route(NetworkInterface? adapter)
+    private static bool HasIpv6Route(NetworkInterface? adapter, int ipv6Index, IReadOnlyList<NativeRoute> routes)
     {
         if (adapter is null || adapter.OperationalStatus != OperationalStatus.Up)
         {
@@ -1455,7 +1474,10 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
             !address.Address.IsIPv6LinkLocal &&
             !address.Address.IsIPv6Multicast &&
             !IPAddress.IsLoopback(address.Address));
-        return hasIpv6Address;
+        var hasIpv6Gateway = properties.GatewayAddresses.Any(address =>
+            address.Address.AddressFamily == AddressFamily.InterNetworkV6 &&
+            !address.Address.IsIPv6Multicast);
+        return HasAdapterPublicIpv6Route(hasIpv6Address, hasIpv6Gateway, ipv6Index, routes);
     }
 
     public static IReadOnlyList<string> InspectPublicIpv6Routes(NetworkInterface? vpnAdapter)

@@ -17,8 +17,42 @@ public sealed partial class WindowsEnvironmentProbe
     private IReadOnlyList<TransportEndpoint> _udpEndpoints = Array.Empty<TransportEndpoint>();
     private IReadOnlyList<string> _publicIpv6Routes = Array.Empty<string>();
     private IReadOnlyList<string> _lastProbeDestinations = Array.Empty<string>();
+    private bool _adapterHasIpv6Route;
     private ProbeRouteContext? _routeContext;
     private static readonly AsyncLocal<ProbeRouteContext?> ActiveProbeRoute = new();
+
+    internal static bool ShouldRequireTunRoute(IPAddress address)
+    {
+        if (IPAddress.IsLoopback(address)) return false;
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+        var bytes = address.GetAddressBytes();
+        if (address.AddressFamily == AddressFamily.InterNetwork)
+        {
+            if (bytes[0] == 0) return false;
+            if (bytes[0] == 10) return false;
+            if (bytes[0] == 172 && bytes[1] is >= 16 and <= 31) return false;
+            if (bytes[0] == 192 && bytes[1] == 168) return false;
+            if (bytes[0] == 169 && bytes[1] == 254) return false;
+            if (bytes[0] >= 224) return false;
+            return true;
+        }
+
+        if (address.Equals(IPAddress.IPv6None) || address.IsIPv6LinkLocal || address.IsIPv6Multicast || address.IsIPv6SiteLocal)
+            return false;
+        if ((bytes[0] & 0xFE) == 0xFC) return false; // fc00::/7 ULA
+        return true;
+    }
+
+    internal static bool HasAdapterPublicIpv6Route(bool hasNonLinkLocalIpv6Address, bool hasIpv6Gateway,
+        int ipv6Index, IReadOnlyList<NativeRoute> routes)
+    {
+        if (!hasNonLinkLocalIpv6Address) return false;
+        if (hasIpv6Gateway) return true;
+        return ipv6Index > 0 && routes.Any(route =>
+            route.InterfaceIndex == ipv6Index &&
+            route.Prefix.AddressFamily == AddressFamily.InterNetworkV6 &&
+            IsPublicOrNat64Ipv6Prefix(route.Prefix.GetAddressBytes(), route.PrefixLength));
+    }
 
     internal sealed record ProbeRouteContext(NativeNetworkEvidence Native, int Ipv4Index, int Ipv6Index,
         bool LocalSystemProxy, List<DestinationRoute> Results)
@@ -63,6 +97,7 @@ public sealed partial class WindowsEnvironmentProbe
             $"{endpoint.ProcessId} [{endpoint.RemoteAddress}]:{endpoint.RemotePort}").ToArray();
         var ipv4Index = adapter is null ? -1 : GetIpv4InterfaceIndex(adapter);
         var ipv6Index = adapter is null ? -1 : GetIpv6InterfaceIndex(adapter);
+        _adapterHasIpv6Route = HasIpv6Route(adapter, ipv6Index, routeTable.Routes);
         var ipv6Names = NetworkInterface.GetAllNetworkInterfaces()
             .GroupBy(GetIpv6InterfaceIndex).ToDictionary(group => group.Key, group => group.First().Name);
         _publicIpv6Routes = routeTable.Routes.Where(route =>
@@ -72,10 +107,11 @@ public sealed partial class WindowsEnvironmentProbe
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         _routeContext = new(_nativeEvidence, ipv4Index, ipv6Index, proxy.Configured, new());
         ActiveProbeRoute.Value = _routeContext;
-        foreach (var destination in new[] { "1.1.1.1", "8.8.8.8" }.Concat(
-                     connections.Tcp.Select(endpoint => endpoint.RemoteAddress)).Concat(_lastProbeDestinations).Distinct())
+        var activeDestinations = connections.Tcp.Select(endpoint => endpoint.RemoteAddress);
+        var cachedDestinations = _lastProbeDestinations.Where(destination => _adapterHasIpv6Route || !destination.Contains(':'));
+        foreach (var destination in new[] { "1.1.1.1", "8.8.8.8" }.Concat(activeDestinations).Concat(cachedDestinations).Distinct())
         {
-            if (!IPAddress.TryParse(destination, out var address) || IPAddress.IsLoopback(address)) continue;
+            if (!IPAddress.TryParse(destination, out var address) || !ShouldRequireTunRoute(address)) continue;
             _routeContext.Results.Add(_nativeEvidence.InspectRoute(address,
                 address.AddressFamily == AddressFamily.InterNetwork ? ipv4Index : ipv6Index));
         }
@@ -137,7 +173,11 @@ public sealed partial class WindowsEnvironmentProbe
         DestinationRoute[] routes;
         lock (_routeContext?.Results ?? new List<DestinationRoute>())
             routes = _routeContext?.Results.ToArray() ?? Array.Empty<DestinationRoute>();
-        _lastProbeDestinations = routes.Select(route => route.Destination).Distinct().ToArray();
+        _lastProbeDestinations = routes
+            .Where(route => _adapterHasIpv6Route || !route.Destination.Contains(':'))
+            .Select(route => route.Destination)
+            .Distinct()
+            .ToArray();
         return snapshot with
         {
             Observations = new Dictionary<string, CollectionObservation>(_observations),

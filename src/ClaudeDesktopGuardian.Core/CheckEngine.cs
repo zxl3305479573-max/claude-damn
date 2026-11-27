@@ -748,11 +748,12 @@ public sealed class GuardianCheckEngine
                 $"DNS {string.Join(", ", network.DnsServers)}；{network.DnsProbeDetail}");
         }
 
-        return Result(
+        return OptionalResult(
+            config,
             GuardianCheckIds.Dns,
             "DNS",
             CheckStatus.Unknown,
-            blocking: true,
+            blockingWhenFail: true,
             "未取得有效 DNS 解析结果；本项仅验证解析与 Fake-IP 特征，不证明完整 DNS 防泄漏");
     }
 

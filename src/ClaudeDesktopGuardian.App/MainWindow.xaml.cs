@@ -372,7 +372,19 @@ public partial class MainWindow : Window
             {
                 var tcpOnly = await SendHelperAsync("tcp-only-disable", null);
                 if (!tcpOnly.Success)
-                    throw new InvalidOperationException("TCP-only 托管规则清理失败：" + tcpOnly.Detail);
+                {
+                    ShowFromTray();
+                    var confirmExit = WpfMessageBox.Show(
+                        $"TCP-only 托管规则未能通过助手自动清理：{tcpOnly.Detail}\n\n" +
+                        "可能因为管理员助手已离线。点击「是」仍继续退出（已保存的 TCP-only 开关将保留，下次启动时重新同步），点击「否」留在面板重连助手并清理。",
+                        "TCP-only 规则清理未确认",
+                        MessageBoxButton.YesNo,
+                        MessageBoxImage.Warning);
+                    if (confirmExit != MessageBoxResult.Yes)
+                    {
+                        return;
+                    }
+                }
             }
 
             _allowExit = true;
@@ -489,7 +501,7 @@ public partial class MainWindow : Window
             _fullCheckPending = true;
             if (_lastReport is not null)
             {
-                _lastReport = EvidenceFreshness.AfterFailedCheck(_lastReport, sw.ElapsedMilliseconds, ex is OperationCanceledException);
+                _lastReport = EvidenceFreshness.AfterSingleCheckFailure(_lastReport, checkId, sw.ElapsedMilliseconds, ex is OperationCanceledException);
                 Render(_lastReport);
                 await ApplyProtectionDecisionAsync(_lastReport, allowClearBlock: false);
             }
@@ -631,7 +643,8 @@ public partial class MainWindow : Window
             Render(report);
             await ApplyProtectionDecisionAsync(report, allowClearBlock: false);
 
-            if (full &&
+            var effectiveFull = full || report.Network.ContextChanged;
+            if (effectiveFull &&
                 _timezoneRecoveryReady &&
                 !report.Network.ProxyPathSkipped &&
                 report.Network.HelperAlive &&
@@ -641,7 +654,7 @@ public partial class MainWindow : Window
             }
 
             sw.Stop();
-            if (full)
+            if (effectiveFull)
             {
                 _logger.LogAction(
                     "full-check",
@@ -661,7 +674,7 @@ public partial class MainWindow : Window
         {
             _fullCheckPending = true;
             sw.Stop();
-            var timeoutMsg = $"监控循环超时（{(full ? "完整检查 >45s" : "轻量检查 >20s")}），已保持当前安全状态";
+            var timeoutMsg = $"监控循环超时（{(full ? "完整检查 >45s" : "轻量检查 >20s")}），已将旧证据标为未验证并执行安全评估";
             LastCheckText.Text = timeoutMsg;
             if (_lastReport is not null)
             {
@@ -1062,11 +1075,12 @@ public partial class MainWindow : Window
             TcpOnlyDetail: result.TcpOnlyDetail ?? string.Empty);
     }
 
-    private async Task ApplySavedTcpOnlyAsync()
+    private async Task<HelperCallResult> ApplySavedTcpOnlyAsync()
     {
         var result = await SendHelperAsync(_config.TcpOnlyEnabled ? "tcp-only-enable" : "tcp-only-disable", null);
         if (!result.Success)
             AppendToolOutput("[警告] TCP-only 策略未确认：" + result.Detail);
+        return result;
     }
 
     private async Task<bool> RestoreStaleTimezoneAsync()

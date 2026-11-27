@@ -238,32 +238,45 @@ internal sealed class HelperCommandDispatcher
                 {
                     Interlocked.Exchange(ref _tcpOnlyRefreshPending, 1);
                     var existing = _executor.FindCurrentUserClaudeProcesses()
-                        .Where(process => string.Equals(process.UserSid, sid, StringComparison.OrdinalIgnoreCase))
+                        .Where(process => string.IsNullOrEmpty(process.UserSid) ||
+                                          string.Equals(process.UserSid, sid, StringComparison.OrdinalIgnoreCase))
                         .Select(process => process.ProcessId).ToArray();
                     var (_, oldRemaining) = await _executor.TerminateProcessesAsync(existing);
                     if (oldRemaining > 0)
                         return new { ok = false, error = "既有 Claude 会话未退出，TCP-only 刷新已中止", tcpOnlyState = "stale" };
                     var status = await _executor.EnableTcpOnlyAsync(groupName + ".TcpOnly");
                     var pids = _executor.FindCurrentUserClaudeProcesses()
-                        .Where(process => string.Equals(process.UserSid, sid, StringComparison.OrdinalIgnoreCase))
+                        .Where(process => string.IsNullOrEmpty(process.UserSid) ||
+                                          string.Equals(process.UserSid, sid, StringComparison.OrdinalIgnoreCase))
                         .Select(process => process.ProcessId).ToArray();
                     var (_, remaining) = status.State == "active"
                         ? await _executor.TerminateProcessesAsync(pids) : (0, 0);
                     var after = _executor.QueryTcpOnlyStatus(groupName + ".TcpOnly");
-                    if (status.State == "active" && after.State == "active" && remaining == 0)
+                    var succeeded = status.State == "active" && after.State == "active" && remaining == 0;
+                    if (succeeded)
                         Interlocked.Exchange(ref _tcpOnlyRefreshPending, 0);
-                    return new { ok = status.State == "active" && after.State == "active" && remaining == 0,
+                    return new
+                    {
+                        ok = succeeded,
                         tcpOnlyState = remaining > 0 ? "stale" : after.State,
                         tcpOnlyDetail = after.Detail,
-                        error = remaining > 0 ? "既有 Claude 会话未退出，拒绝宣称 TCP-only 已完成" : after.Detail,
-                        detail = after.Detail };
+                        error = succeeded ? "" : remaining > 0 ? "既有 Claude 会话未退出，拒绝宣称 TCP-only 已完成" : after.Detail,
+                        detail = after.Detail
+                    };
                 }
                 if (request.Command == "tcp-only-disable")
                 {
                     await _executor.DisableTcpOnlyAsync(groupName + ".TcpOnly");
                     var after = _executor.QueryTcpOnlyStatus(groupName + ".TcpOnly");
-                    return new { ok = after.State == "off", tcpOnlyState = after.State, tcpOnlyDetail = after.Detail,
-                        detail = after.Detail, error = "TCP-only 托管规则未能清理" };
+                    var disabled = after.State == "off";
+                    return new
+                    {
+                        ok = disabled,
+                        tcpOnlyState = after.State,
+                        tcpOnlyDetail = after.Detail,
+                        detail = after.Detail,
+                        error = disabled ? "" : "TCP-only 托管规则未能清理"
+                    };
                 }
                 var paths = (request.Paths ?? Array.Empty<string>())
                     .Where(_executor.IsAllowedClaudePath)

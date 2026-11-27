@@ -34,7 +34,12 @@ internal static class DetectionEvidenceTests
             return (await engine.RunAsync(cfg ?? config, true, default)).Checks.Single(check => check.Id == id);
         }
         var emptyDns = await Evaluate(GuardianCheckIds.Dns, healthy with { ResolvedClaudeIps = Array.Empty<string>(), DnsProbeDetail = "" });
-        Check(emptyDns.Status == CheckStatus.Unknown, "空 DNS 结果不得误绿");
+        Check(emptyDns.Status == CheckStatus.Unknown && emptyDns.Blocking, "空 DNS 结果不得误绿");
+        var emptyDnsDowngraded = await Evaluate(GuardianCheckIds.Dns,
+            healthy with { ResolvedClaudeIps = Array.Empty<string>(), DnsProbeDetail = "" },
+            config with { AllowOptionalFailures = true });
+        Check(emptyDnsDowngraded.Status == CheckStatus.Warn && !emptyDnsDowngraded.Blocking,
+            "开启可选降级时，DNS 兜底空结果应与 DNS 失败分支一致降级为 Warn");
         var malformedDns = await Evaluate(GuardianCheckIds.Dns, healthy with { ResolvedClaudeIps = new[] { "invalid" } });
         Check(malformedDns.Status == CheckStatus.Unknown, "非法 DNS 地址不得误绿");
         foreach (var id in new[] { GuardianCheckIds.ActiveConnections, GuardianCheckIds.Ipv6, GuardianCheckIds.DefaultRoute })
@@ -107,17 +112,32 @@ internal static class DetectionEvidenceTests
         Check(EvidenceFreshness.EgressBaselineChanged("203.0.113.10", "US", "203.0.113.11", "US") &&
               EvidenceFreshness.EgressBaselineChanged("203.0.113.10", "US", "203.0.113.10", "JP"),
             "同网卡换出口 IP 或国家必须使依赖缓存失效");
+        Check(!EvidenceFreshness.EgressBaselineChanged("203.0.113.10", "US", "", ""),
+            "瞬时出口采集失败（空 IP）不得误判为换出口而清空全量缓存");
         probe.Snapshot = healthy;
         var beforeTimeout = await engine.RunAsync(config, true, default);
         var afterTimeout = EvidenceFreshness.AfterTimeout(beforeTimeout, 45_001);
         Check(afterTimeout.ObservedAt == beforeTimeout.ObservedAt && afterTimeout.Network.LastCycleTimedOut &&
               afterTimeout.Checks.All(check => check.Status == CheckStatus.Skip || check.Status == CheckStatus.Unknown && check.IsCached),
             "超时不能把旧绿证据显示为新鲜，不能重写最后成功时间");
+        var afterSecondTimeout = EvidenceFreshness.AfterTimeout(afterTimeout, 45_002);
+        Check(afterSecondTimeout.Checks.All(check =>
+            check.Status == CheckStatus.Skip ||
+            check.Detail.IndexOf("本轮检查超时", StringComparison.Ordinal) ==
+            check.Detail.LastIndexOf("本轮检查超时", StringComparison.Ordinal)),
+            "连续超时不得重复拼接旧证据前缀");
+        var singleFailed = EvidenceFreshness.AfterSingleCheckFailure(beforeTimeout, GuardianCheckIds.Asn, 25_001, true);
+        Check(singleFailed.Checks.Single(check => check.Id == GuardianCheckIds.Asn).Status == CheckStatus.Unknown &&
+              singleFailed.Checks.Single(check => check.Id == GuardianCheckIds.EgressIp).Status == CheckStatus.Ok &&
+              ProtectionPolicyEvaluator.EvaluateLaunchGate(singleFailed, false, false).Allowed &&
+              ProtectionPolicyEvaluator.Evaluate(singleFailed, false, false).Action == ProtectionAction.None,
+            "可选检查单项复检超时只应影响目标项，不得污染硬检查或急停 Claude");
         Check(!ProtectionPolicyEvaluator.EvaluateLaunchGate(afterTimeout, false, false).Allowed,
             "超时后旧证据不能继续允许启动");
         var confirmed = beforeTimeout with { Checks = beforeTimeout.Checks.Select(check => check.Id == GuardianCheckIds.WebRtc
             ? check with { Status = CheckStatus.Fail, Blocking = true } : check).ToArray() };
-        Check(EvidenceFreshness.AfterTimeout(confirmed, 45_001).HasConfirmedWebRtcLeak,
+        Check(EvidenceFreshness.AfterTimeout(confirmed, 45_001).HasConfirmedWebRtcLeak &&
+              EvidenceFreshness.AfterSingleCheckFailure(confirmed, GuardianCheckIds.WebRtc, 25_001, true).HasConfirmedWebRtcLeak,
             "采集超时不得把确认的 WebRTC 泄漏降级为 Unknown");
         var browser = new CountingBrowserProbe(new(true, "complete", true, Array.Empty<WebRtcCandidate>(), "synthetic"));
         var contextEngine = new GuardianCheckEngine(probe, new FakeInspector(), browser);
@@ -187,6 +207,30 @@ internal static class DetectionEvidenceTests
         Check(key != NativeNetworkEvidence.ContextKey(new[] { "tun:28", "dns:synthetic" }, table, "proxy:local"), "TUN 重建应改变网络上下文");
         Check(key != NativeNetworkEvidence.ContextKey(new[] { "tun:27", "dns:changed" }, table, "proxy:local"), "DNS 变化应改变网络上下文");
         Check(key != NativeNetworkEvidence.ContextKey(new[] { "tun:27", "dns:synthetic" }, table, "proxy:changed"), "代理变化应改变网络上下文");
+        Check(!WindowsEnvironmentProbe.HasAdapterPublicIpv6Route(true, false, 27,
+                  new[] { new NativeRoute(27, IPAddress.Parse("fdfe:dcba:9876::"), 64, 0) }),
+            "仅有 ULA 地址而无公网/默认 IPv6 路由的 TUN 不应误判为启用公网 IPv6");
+        Check(WindowsEnvironmentProbe.HasAdapterPublicIpv6Route(true, false, 27,
+                  new[] { new NativeRoute(27, IPAddress.IPv6Any, 0, 0) }) &&
+              WindowsEnvironmentProbe.HasAdapterPublicIpv6Route(true, true, 27, Array.Empty<NativeRoute>()),
+            "存在 IPv6 网关或默认/公网路由的 TUN 必须识别为启用 IPv6");
+        Check(!WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("127.0.0.1")) &&
+              !WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("192.168.1.10")) &&
+              !WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("10.0.0.5")) &&
+              !WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("172.16.0.2")) &&
+              !WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("169.254.1.1")) &&
+              !WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("fe80::1")) &&
+              !WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("fdfe:dcba:9876::1")) &&
+              WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("198.18.0.42")) &&
+              WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("1.1.1.1")) &&
+              WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("203.0.113.10")) &&
+              WindowsEnvironmentProbe.ShouldRequireTunRoute(IPAddress.Parse("2001:db8::1")),
+            "目标最佳路由校验应排除回环/私网/链路本地，保留 Fake-IP 与公网目标");
+        Check(WindowsFirewallPolicyStore.IsLocalPolicyStateEffective(0) &&
+              WindowsFirewallPolicyStore.IsLocalPolicyStateEffective(2) &&
+              !WindowsFirewallPolicyStore.IsLocalPolicyStateEffective(1) &&
+              !WindowsFirewallPolicyStore.IsLocalPolicyStateEffective(99),
+            "防火墙有效策略应兼容阻止所有传入连接(2)，但拒绝组策略覆盖(1)与未知值");
 
         var firewall = new MemoryFirewall();
         using var installation = new SyntheticInstallation();
@@ -197,8 +241,15 @@ internal static class DetectionEvidenceTests
         var enabled = await executor.EnableTcpOnlyAsync(group);
         Check(enabled.State == "active", "TCP-only 应能创建并读回规则");
         var expectedRule = firewall.Rules.Single();
+        Check(expectedRule.LocalUsers.StartsWith("O:LSD:(A;;CC;;;", StringComparison.Ordinal),
+            "TCP-only 托管规则 LocalUserAuthorizedList 必须带 O:LS 属主前缀");
         Check(expectedRule.Protocol == 17 && expectedRule.Profiles == 7 && expectedRule.RemotePorts == "*" && !expectedRule.InterfaceRestricted,
             "TCP-only 必须封禁全部出站 UDP 端口/接口/配置");
+        Check(WindowsHelperSystemExecutor.RuleMatches(
+                  expectedRule with { LocalUsers = expectedRule.LocalUsers.ToLowerInvariant() }, expectedRule),
+            "LocalUsers SDDL 大小写规范化变化应兼容");
+        Check((await executor.EnableTcpOnlyAsync(group)).State == "active" && firewall.Rules.Count == 1,
+            "重复启用 TCP-only 必须先清旧规则再写入，避免 COM 重复同名规则导致 stale");
         var mutations = new Func<FirewallRuleEvidence, FirewallRuleEvidence>[]
         {
             rule => rule with { Enabled = false }, rule => rule with { Direction = 1 },
@@ -216,7 +267,8 @@ internal static class DetectionEvidenceTests
             firewall.Rules[0] = mutate(expectedRule);
             Check(executor.QueryTcpOnlyStatus(group).State == "stale", "规则属性篡改必须触发 stale");
         }
-        firewall.Rules[0] = expectedRule;
+        Check((await executor.EnableTcpOnlyAsync(group)).State == "active" && firewall.Rules.Count == 1,
+            "显式刷新应能幂等修复被篡改的同名托管规则");
         installedPaths = new[] { installation.Version2 };
         Check(executor.QueryTcpOnlyStatus(group).State == "stale", "Claude 升级路径改变应检测过期");
         Check((await executor.EnableTcpOnlyAsync(group)).State == "active", "显式刷新应覆盖新 Claude 安装身份");
@@ -238,7 +290,7 @@ internal static class DetectionEvidenceTests
               msixStore.Rules.Any(rule => rule.Application == "" && rule.PackageSid.StartsWith("S-1-15-2-")),
             "MSIX 包 SID 与 EXE 身份必须同时覆盖");
 
-        var fake = new FakeHelperExecutor();
+        var fake = new FakeHelperExecutor { IncludeEmptySidProcess = true };
         var dispatcher = new HelperCommandDispatcher(fake);
         async Task<JsonElement> Command(string name, string? token = null)
         {
@@ -250,9 +302,14 @@ internal static class DetectionEvidenceTests
         fake.TcpOnlyState = "active";
         Check((await Command("tcp-only-status")).GetProperty("tcpOnlyState").GetString() == "stale",
             "助手重启后需要重验旧会话，不能沿用 active");
-        Check((await Command("tcp-only-enable")).GetProperty("ok").GetBoolean(), "认证启用流程应读回并确认退出");
-        Check(fake.TerminatedPids.Contains(1001) && !fake.TerminatedPids.Contains(2002), "只能终止当前用户 Claude 树");
-        Check((await Command("tcp-only-disable")).GetProperty("ok").GetBoolean(), "关闭命令应读回 off");
+        var enableResp = await Command("tcp-only-enable");
+        Check(enableResp.GetProperty("ok").GetBoolean() && enableResp.GetProperty("error").GetString() == "",
+            "认证启用流程应读回、确认退出且成功响应不带错误文案");
+        Check(fake.TerminatedPids.Contains(1001) && fake.TerminatedPids.Contains(1003) && !fake.TerminatedPids.Contains(2002),
+            "应终止当前用户（含空 SID 子进程）Claude 树，绝不触碰其他用户进程");
+        var disableResp = await Command("tcp-only-disable");
+        Check(disableResp.GetProperty("ok").GetBoolean() && disableResp.GetProperty("error").GetString() == "",
+            "关闭命令应读回 off 且成功响应不带错误文案");
         fake.TcpOnlyRemaining = 1;
         Check(!(await Command("tcp-only-enable")).GetProperty("ok").GetBoolean(), "旧 Claude 会话未退出时必须拒绝宣称启用完成");
     }
@@ -273,12 +330,13 @@ internal static class DetectionEvidenceTests
         public bool Effective { get; set; } = true;
         public FirewallPolicyEvidence Read(string group) => new(Readable, Effective,
             Rules.Where(rule => rule.Group == group).ToArray(), "synthetic policy");
-        public void Add(FirewallRuleEvidence rule)
+        // Append without auto-dedup to expose duplicate-name issues if caller forgets to remove first
+        public void Add(FirewallRuleEvidence rule) => Rules.Add(rule);
+        public void Remove(string name)
         {
-            Rules.RemoveAll(existing => existing.Name == rule.Name);
-            Rules.Add(rule);
+            var index = Rules.FindIndex(rule => rule.Name == name);
+            if (index >= 0) Rules.RemoveAt(index);
         }
-        public void Remove(string name) => Rules.RemoveAll(rule => rule.Name == name);
     }
 
     private sealed class SyntheticInstallation : IDisposable

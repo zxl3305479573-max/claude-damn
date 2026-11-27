@@ -1500,7 +1500,7 @@ try
     var cliDataPath = Path.Combine(cliRoot, "ClaudeData");
     var cliHelperCommands = new List<string>();
 
-    GuardianCliContext MakeCliCtx(StringWriter stdout, StringWriter stderr, TextReader? stdin = null, Func<string, string?>? env = null) =>
+    GuardianCliContext MakeCliCtx(StringWriter stdout, StringWriter stderr, TextReader? stdin = null, Func<string, string?>? env = null, bool helperOk = true) =>
         new()
         {
             ConfigStore = new GuardianConfigStore(cliCfgPath),
@@ -1516,7 +1516,7 @@ try
             SendHelper = (command, _) =>
             {
                 cliHelperCommands.Add(command);
-                return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
+                return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = helperOk }));
             }
         };
 
@@ -1555,6 +1555,16 @@ try
            !getJson.Contains("TOP-SECRET-CLI-KEY", StringComparison.Ordinal),
         "CLI get-check-config 必须回报 keyConfigured 且绝不回显明文密钥", failures);
     Assert(cliHelperCommands.SequenceEqual(new[] { "tcp-only-enable" }), "CLI 启用配置应通过认证助手应用策略", failures);
+    Assert(await GuardianCliRunner.RunAsync(new[] { "tcp-only-disable" },
+        MakeCliCtx(new StringWriter(), new StringWriter(), helperOk: false)) == 1,
+        "CLI tcp-only-disable 助手清理失败时必须返回非零", failures);
+    Assert(await GuardianCliRunner.RunAsync(new[] { "set-check-config", """{"tcpOnlyEnabled":false}""" },
+        MakeCliCtx(new StringWriter(), new StringWriter(), helperOk: false)) == 1,
+        "CLI set-check-config 关闭 TCP-only 失败时必须返回非零", failures);
+    var stillEnabledOut = new StringWriter();
+    _ = await GuardianCliRunner.RunAsync(new[] { "get-check-config" }, MakeCliCtx(stillEnabledOut, new StringWriter()));
+    Assert(stillEnabledOut.ToString().Contains("\"tcpOnlyEnabled\":true", StringComparison.Ordinal),
+        "TCP-only 清理未确认前不得先将配置写成 false 掩盖残留规则", failures);
     Assert(await GuardianCliRunner.RunAsync(new[] { "set-check-config", """{"tcpOnlyEnabled":false}""" },
         MakeCliCtx(new StringWriter(), new StringWriter())) == 0 && cliHelperCommands.Last() == "tcp-only-disable",
         "CLI 关闭配置应清理专用托管策略", failures);
@@ -2102,12 +2112,21 @@ sealed class FakeHelperExecutor : IHelperSystemExecutor
         path.Contains("\\Claude\\", StringComparison.OrdinalIgnoreCase) ||
         path.Contains("\\AnthropicClaude\\", StringComparison.OrdinalIgnoreCase);
 
+    public bool IncludeEmptySidProcess { get; set; }
+
     public IReadOnlyList<ProcessInfo> FindCurrentUserClaudeProcesses() =>
-        new[]
-        {
-            new ProcessInfo(1001, 1, "Claude.exe", @"C:\Users\Test\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-fake"),
-            new ProcessInfo(2002, 1, "Claude.exe", @"C:\Users\Other\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-other")
-        };
+        IncludeEmptySidProcess
+            ? new[]
+            {
+                new ProcessInfo(1001, 1, "Claude.exe", @"C:\Users\Test\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-fake"),
+                new ProcessInfo(1003, 1001, "Claude.exe", @"C:\Users\Test\AppData\Local\Programs\Claude\Claude.exe", ""),
+                new ProcessInfo(2002, 1, "Claude.exe", @"C:\Users\Other\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-other")
+            }
+            : new[]
+            {
+                new ProcessInfo(1001, 1, "Claude.exe", @"C:\Users\Test\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-fake"),
+                new ProcessInfo(2002, 1, "Claude.exe", @"C:\Users\Other\AppData\Local\Programs\Claude\Claude.exe", "S-1-5-21-other")
+            };
 
     public Task<string> ReadTimezoneAsync() => Task.FromResult(CurrentTimezone);
 

@@ -148,8 +148,14 @@ public partial class MainWindow
             _timer.Interval = TimeSpan.FromSeconds(_config.LightIntervalSeconds);
             LoadConfigToUi(_config);
 
+            var tcpOnlyNotice = string.Empty;
             if (previousTcpOnly != _config.TcpOnlyEnabled)
-                await ApplySavedTcpOnlyAsync();
+            {
+                var tcpRes = await ApplySavedTcpOnlyAsync();
+                tcpOnlyNotice = tcpRes.Success
+                    ? (_config.TcpOnlyEnabled ? "；TCP-only 规则已应用" : "；TCP-only 规则已清理")
+                    : $"；TCP-only 未确认（{tcpRes.Detail}）";
+            }
 
             var wfpNotice = string.Empty;
             if (_config.WfpStrictEnabled &&
@@ -164,7 +170,7 @@ public partial class MainWindow
                 wfpNotice = wfpRes.Success ? "；WFP 出站锁已自动应用" : $"；WFP 应用失败（{wfpRes.Detail}）";
             }
 
-            SettingsStatusText.Text = $"✓ 设置已保存至 config.json{wfpNotice}，正在重新执行完整检查…";
+            SettingsStatusText.Text = $"✓ 设置已保存至 config.json{tcpOnlyNotice}{wfpNotice}，正在重新执行完整检查…";
             SettingsStatusText.Foreground = (WpfBrush)FindResource("StatusOkBrush");
             _logger.LogAction("save-config", "ok", 0, enabled: _config.LoggingEnabled);
             await RunCheckAsync(true);

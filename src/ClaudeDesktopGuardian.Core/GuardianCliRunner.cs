@@ -342,12 +342,22 @@ public static class GuardianCliRunner
                     }
 
                     var updated = ApplyCheckConfigPatch(config, args[1]);
-                    ctx.ConfigStore.Save(updated, preserveExistingApiKeyIfEmpty: true);
-                    if (updated.TcpOnlyEnabled != config.TcpOnlyEnabled)
+                    if (config.TcpOnlyEnabled && !updated.TcpOnlyEnabled)
                     {
-                        var response = await ctx.SendHelper(updated.TcpOnlyEnabled ? "tcp-only-enable" : "tcp-only-disable", cancellationToken);
-                        if (!response.TryGetProperty("ok", out var applied) || !applied.GetBoolean())
-                            throw new InvalidOperationException("设置已保存，但 TCP-only 策略未确认生效/清理；请启动助手并显式修复");
+                        var response = await ctx.SendHelper("tcp-only-disable", cancellationToken);
+                        if (!response.TryGetProperty("ok", out var disabled) || !disabled.GetBoolean())
+                            throw new InvalidOperationException("TCP-only 托管规则未确认清理，未关闭该设置；请启动助手后重试");
+                        ctx.ConfigStore.Save(updated, preserveExistingApiKeyIfEmpty: true);
+                    }
+                    else
+                    {
+                        ctx.ConfigStore.Save(updated, preserveExistingApiKeyIfEmpty: true);
+                        if (!config.TcpOnlyEnabled && updated.TcpOnlyEnabled)
+                        {
+                            var response = await ctx.SendHelper("tcp-only-enable", cancellationToken);
+                            if (!response.TryGetProperty("ok", out var applied) || !applied.GetBoolean())
+                                throw new InvalidOperationException("设置已保存，但 TCP-only 策略未确认生效；请启动助手并显式修复");
+                        }
                     }
                     ctx.Out.WriteLine("OK:检查设置已保存");
                     break;
@@ -356,11 +366,14 @@ public static class GuardianCliRunner
                 case "tcp-only-status":
                 case "tcp-only-disable":
                 {
-                    if (command != "tcp-only-status")
-                        ctx.ConfigStore.Save(config with { TcpOnlyEnabled = command == "tcp-only-enable" });
+                    if (command == "tcp-only-enable")
+                        ctx.ConfigStore.Save(config with { TcpOnlyEnabled = true }, preserveExistingApiKeyIfEmpty: true);
                     var response = await ctx.SendHelper(command, cancellationToken);
+                    var ok = response.TryGetProperty("ok", out var success) && success.GetBoolean();
+                    if (command == "tcp-only-disable" && ok)
+                        ctx.ConfigStore.Save(config with { TcpOnlyEnabled = false }, preserveExistingApiKeyIfEmpty: true);
                     ctx.Out.WriteLine(response.GetRawText());
-                    exitCode = response.TryGetProperty("ok", out var success) && success.GetBoolean() ? 0 : 1;
+                    exitCode = ok ? 0 : 1;
                     break;
                 }
                 case "export-diagnostics":
