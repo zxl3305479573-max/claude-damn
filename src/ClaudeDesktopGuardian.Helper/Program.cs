@@ -9,7 +9,7 @@ namespace ClaudeDesktopGuardian.Helper;
 internal static class Program
 {
     private const string PipeName = "ClaudeDesktopGuardian";
-    private const int MaxPipeInstances = 4;
+    private const int MaxPipeInstances = 16;
 
     public static async Task<int> Main(string[] args)
     {

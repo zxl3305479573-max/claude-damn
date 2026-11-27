@@ -357,6 +357,65 @@ internal static class DetectionEvidenceTests
             "关闭命令应读回 off 且成功响应不带错误文案");
         fake.TcpOnlyRemaining = 1;
         Check(!(await Command("tcp-only-enable")).GetProperty("ok").GetBoolean(), "旧 Claude 会话未退出时必须拒绝宣称启用完成");
+
+        // WFP canonical target resolution: discovered install paths take precedence over runtime junction/extra paths
+        var discoveredWfp = new[]
+        {
+            @"C:\Program Files\WindowsApps\Claude_6.28899.6.0_x64__pzs8sxrjxfjjc\app\claude.exe",
+            @"C:\Program Files\WindowsApps\Claude_6.28899.6.0_x64__pzs8sxrjxfjjc\app\resources\cowork-svc.exe"
+        };
+        var runtimeExtraWfp = new[]
+        {
+            @"D:\WindowsApps\Claude_6.28899.6.0_x64__pzs8sxrjxfjjc\app\claude.exe",
+            @"C:\Users\Me\AppData\Roaming\Claude\child.exe"
+        };
+        var resolvedCanonical = ClaudeInstallDiscovery.ResolveWfpTargetPaths(discoveredWfp, runtimeExtraWfp, _ => true);
+        Check(resolvedCanonical.SequenceEqual(discoveredWfp),
+            "已发现安装目录时，WFP 目标路径必须与查询阶段保持一致，不得拼接运行时/卷挂载点重复路径导致假 stale");
+        var resolvedFallback = ClaudeInstallDiscovery.ResolveWfpTargetPaths(
+            Array.Empty<string>(),
+            new[] { installation.Version1, @"C:\Windows\System32\notepad.exe" },
+            path => path.Contains(@"\Claude\", StringComparison.OrdinalIgnoreCase));
+        Check(resolvedFallback.SequenceEqual(new[] { installation.Version1 }),
+            "仅在标准目录未发现安装时才回退使用受白名单过滤的运行时路径");
+
+        // Auto-refresh stale WFP on reconnect + one-click recovery policy refresh gates
+        var strictCfg = config with { WfpStrictEnabled = true, TcpOnlyEnabled = true };
+        var staleWfpReport = new GuardianReport(
+            DateTimeOffset.UtcNow,
+            Array.Empty<CheckResult>(),
+            healthy with
+            {
+                AdapterGuid = "{11111111-2222-3333-4444-555555555555}",
+                HelperAlive = true,
+                ProxyPathSkipped = false,
+                WfpPolicyState = "stale",
+                TcpOnlyState = "stale"
+            },
+            Array.Empty<ProcessInfo>());
+        Check(ProtectionPolicyEvaluator.ShouldAutoRefreshStaleWfp(strictCfg, staleWfpReport),
+            "严格 WFP 在 TUN 恢复在线且无运行中 Claude 时，应自动刷新因网卡重建导致的 stale WFP");
+        Check(!ProtectionPolicyEvaluator.ShouldAutoRefreshStaleWfp(
+                strictCfg,
+                staleWfpReport with { Network = staleWfpReport.Network with { WfpPolicyState = "off" } }),
+            "手动关闭 WFP（off）时后台不得擅自重新启用");
+        Check(!ProtectionPolicyEvaluator.ShouldAutoRefreshStaleWfp(
+                strictCfg,
+                staleWfpReport with { ProtectedProcesses = new[] { new ProcessInfo(1001, 4, "Claude.exe", installation.Version1, "S-1-5-21-1") } }),
+            "Claude 运行中时后台不得静默重绑 WFP 以免意外杀进程");
+        var recoveryRefresh = ProtectionPolicyEvaluator.NeedsRecoveryPolicyRefresh(strictCfg, staleWfpReport);
+        Check(recoveryRefresh.RefreshWfp && recoveryRefresh.RefreshTcpOnly,
+            "点击解除阻断时应识别过期的 WFP 与 TCP-only 并自动刷新复检");
+        var recoveryOffWfp = ProtectionPolicyEvaluator.NeedsRecoveryPolicyRefresh(
+            strictCfg,
+            staleWfpReport with { Network = staleWfpReport.Network with { WfpPolicyState = "off", TcpOnlyState = "active" } });
+        Check(recoveryOffWfp.RefreshWfp && !recoveryOffWfp.RefreshTcpOnly,
+            "严格 WFP 解除阻断时若 WFP 为 off 也应自动重建，而 active 的 TCP-only 无需重复刷新");
+        var recoveryOffline = ProtectionPolicyEvaluator.NeedsRecoveryPolicyRefresh(
+            strictCfg,
+            staleWfpReport with { Network = staleWfpReport.Network with { HelperAlive = false } });
+        Check(!recoveryOffline.RefreshWfp && !recoveryOffline.RefreshTcpOnly,
+            "管理员助手离线时不得宣称可执行策略刷新");
     }
 
     private sealed class SnapshotProbe(NetworkSnapshot snapshot) : IEnvironmentProbe, ISingleCheckProbe

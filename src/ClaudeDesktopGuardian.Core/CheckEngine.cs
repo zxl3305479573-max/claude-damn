@@ -79,6 +79,33 @@ public static class ProtectionPolicyEvaluator
         return new ProtectionDecision(ProtectionAction.StayBlocked, reason, failures);
     }
 
+    public static bool ShouldAutoRefreshStaleWfp(GuardianConfig config, GuardianReport report) =>
+        config.WfpStrictEnabled &&
+        report.Network.HelperAlive &&
+        !report.Network.ProxyPathSkipped &&
+        !string.IsNullOrWhiteSpace(report.Network.AdapterGuid) &&
+        string.Equals(report.Network.WfpPolicyState, "stale", StringComparison.OrdinalIgnoreCase) &&
+        report.ProtectedProcesses.Count == 0;
+
+    public static (bool RefreshWfp, bool RefreshTcpOnly) NeedsRecoveryPolicyRefresh(
+        GuardianConfig config,
+        GuardianReport report)
+    {
+        if (!report.Network.HelperAlive || report.Network.ProxyPathSkipped)
+        {
+            return (false, false);
+        }
+
+        var refreshWfp = config.WfpStrictEnabled &&
+                         !string.IsNullOrWhiteSpace(report.Network.AdapterGuid) &&
+                         (string.Equals(report.Network.WfpPolicyState, "stale", StringComparison.OrdinalIgnoreCase) ||
+                          string.Equals(report.Network.WfpPolicyState, "off", StringComparison.OrdinalIgnoreCase));
+        var refreshTcpOnly = config.TcpOnlyEnabled &&
+                             (string.Equals(report.Network.TcpOnlyState, "stale", StringComparison.OrdinalIgnoreCase) ||
+                              string.Equals(report.Network.TcpOnlyState, "off", StringComparison.OrdinalIgnoreCase));
+        return (refreshWfp, refreshTcpOnly);
+    }
+
     public static LaunchGateDecision EvaluateLaunchGate(
         GuardianReport? report,
         bool currentlyBlocked,

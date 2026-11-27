@@ -588,6 +588,15 @@ internal sealed partial class WindowsHelperSystemExecutor : IHelperSystemExecuto
             install.ExecutablePaths,
             luid,
             allowLoopback);
+        if (state == "stale" && luid != 0)
+        {
+            install = ClaudeInstallDiscovery.Discover(forceRefresh: true);
+            state = policy.Status(
+                install.PackageFamilyName,
+                install.ExecutablePaths,
+                luid,
+                allowLoopback);
+        }
         var detail = state switch
         {
             "active" => $"WFP 内核出站锁生效中（覆盖 {install.ExecutablePaths.Count} 个程序" +
@@ -615,18 +624,24 @@ internal sealed partial class WindowsHelperSystemExecutor : IHelperSystemExecuto
         }
 
         var install = ClaudeInstallDiscovery.Discover(forceRefresh: true);
-        var mergedPaths = install.ExecutablePaths
-            .Concat(extraPaths)
-            .Where(ClaudeInstallDiscovery.IsAllowedClaudeProgramPath)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToArray();
-        if (mergedPaths.Length == 0)
+        var targetPaths = ClaudeInstallDiscovery.ResolveWfpTargetPaths(install.ExecutablePaths, extraPaths);
+        if (targetPaths.Count == 0)
         {
             return new HelperWfpEnableResult(false, "未发现已安装的 Claude Desktop 可执行文件（EXE 或 MSIX），无法应用 WFP 出站锁", 0, 0, 0);
         }
 
         using var policy = new WfpNetworkPolicy();
-        policy.Apply(install.PackageFamilyName, mergedPaths, luid, allowLoopback);
+        policy.Apply(install.PackageFamilyName, targetPaths, luid, allowLoopback);
+        var verifiedState = policy.Status(install.PackageFamilyName, targetPaths, luid, allowLoopback);
+        if (!string.Equals(verifiedState, "active", StringComparison.OrdinalIgnoreCase))
+        {
+            return new HelperWfpEnableResult(
+                false,
+                $"WFP 规则已写入但立即复核状态为 {verifiedState}，请检查 Claude 安装路径与 TUN 接口",
+                targetPaths.Count,
+                0,
+                0);
+        }
 
         // Close pre-existing current-user Claude Desktop processes and verify exit so old sockets cannot bypass ALE_AUTH_CONNECT
         var existingPids = FindCurrentUserClaudeProcesses().Select(p => p.ProcessId).ToArray();
@@ -643,8 +658,8 @@ internal sealed partial class WindowsHelperSystemExecutor : IHelperSystemExecuto
             : string.Empty;
         return new HelperWfpEnableResult(
             true,
-            $"WFP 内核出站锁已启用（{modeDesc}，覆盖 {mergedPaths.Length} 个可执行文件{pkgSuffix}{killSuffix}",
-            mergedPaths.Length,
+            $"WFP 内核出站锁已启用（{modeDesc}，覆盖 {targetPaths.Count} 个可执行文件{pkgSuffix}{killSuffix}",
+            targetPaths.Count,
             terminated,
             remaining);
     }

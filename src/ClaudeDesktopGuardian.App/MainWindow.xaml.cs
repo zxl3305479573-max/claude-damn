@@ -50,6 +50,8 @@ public partial class MainWindow : Window
     private DateTimeOffset _lastFullCheck = DateTimeOffset.MinValue;
     private bool _fullCheckPending = true;
     private GuardianUpdate? _availableUpdate;
+    private string? _lastAutoWfpRefreshAdapterGuid;
+    private DateTimeOffset _lastAutoWfpRefreshAtUtc = DateTimeOffset.MinValue;
 
     public MainWindow()
     {
@@ -535,6 +537,51 @@ public partial class MainWindow : Window
                 return;
             }
 
+            if (!report.Network.HelperAlive && await EnsureHelperAvailableAsync())
+            {
+                _timezoneRecoveryReady = await RestoreStaleTimezoneAsync();
+                report = await RunCheckAsync(true);
+                if (report is null)
+                {
+                    return;
+                }
+            }
+
+            var (refreshWfp, refreshTcpOnly) = ProtectionPolicyEvaluator.NeedsRecoveryPolicyRefresh(_config, report);
+            var refreshedPolicy = false;
+            if (refreshWfp)
+            {
+                var wfpRes = await SendHelperAsync(
+                    "wfp-enable",
+                    report,
+                    adapterGuid: report.Network.AdapterGuid,
+                    allowLoopback: _config.WfpAllowLoopback);
+                _logger.LogAction("recover-wfp-refresh", wfpRes.Success ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
+                if (wfpRes.Success)
+                {
+                    refreshedPolicy = true;
+                }
+            }
+
+            if (refreshTcpOnly)
+            {
+                var tcpRes = await SendHelperAsync("tcp-only-enable", null);
+                _logger.LogAction("recover-tcp-only-refresh", tcpRes.Success ? "ok" : "fail", 0, enabled: _config.LoggingEnabled);
+                if (tcpRes.Success)
+                {
+                    refreshedPolicy = true;
+                }
+            }
+
+            if (refreshedPolicy)
+            {
+                report = await RunCheckAsync(true);
+                if (report is null)
+                {
+                    return;
+                }
+            }
+
             var decision = ProtectionPolicyEvaluator.Evaluate(report, _blocked, _ignoreWebRtc, allowClearBlock: true);
             if (decision.BlockingFailures.Count > 0)
             {
@@ -639,11 +686,42 @@ public partial class MainWindow : Window
                     LastCycleTimedOut = false
                 }
             };
+            var effectiveFull = full || report.Network.ContextChanged;
             _lastReport = report;
             Render(report);
             await ApplyProtectionDecisionAsync(report, allowClearBlock: false);
 
-            var effectiveFull = full || report.Network.ContextChanged;
+            if (string.Equals(report.Network.WfpPolicyState, "active", StringComparison.OrdinalIgnoreCase))
+            {
+                _lastAutoWfpRefreshAdapterGuid = null;
+            }
+            else if (ProtectionPolicyEvaluator.ShouldAutoRefreshStaleWfp(_config, report) &&
+                     (!string.Equals(_lastAutoWfpRefreshAdapterGuid, report.Network.AdapterGuid, StringComparison.OrdinalIgnoreCase) ||
+                      DateTimeOffset.UtcNow - _lastAutoWfpRefreshAtUtc >= TimeSpan.FromSeconds(30)))
+            {
+                _lastAutoWfpRefreshAdapterGuid = report.Network.AdapterGuid;
+                _lastAutoWfpRefreshAtUtc = DateTimeOffset.UtcNow;
+                var wfpSw = Stopwatch.StartNew();
+                var wfpRes = await SendHelperAsync(
+                    "wfp-enable",
+                    report,
+                    adapterGuid: report.Network.AdapterGuid,
+                    allowLoopback: _config.WfpAllowLoopback);
+                wfpSw.Stop();
+                _logger.LogAction("auto-wfp-refresh", wfpRes.Success ? "ok" : "fail", wfpSw.ElapsedMilliseconds, enabled: _config.LoggingEnabled);
+                if (wfpRes.Success)
+                {
+                    report = await _engine.RunSingleCheckAsync(report, GuardianCheckIds.WfpPolicy, _config, cycleTimeout.Token);
+                    _lastReport = report;
+                    Render(report);
+                    await ApplyProtectionDecisionAsync(report, allowClearBlock: false);
+                    if (string.Equals(report.Network.WfpPolicyState, "active", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _lastAutoWfpRefreshAdapterGuid = null;
+                    }
+                }
+            }
+
             if (effectiveFull &&
                 _timezoneRecoveryReady &&
                 !report.Network.ProxyPathSkipped &&
@@ -1074,7 +1152,7 @@ public partial class MainWindow : Window
             null,
             adapterGuid: adapterGuid,
             allowLoopback: allowLoopback,
-            timeoutMs: 4_000,
+            timeoutMs: 5_000,
             cancellationToken: cancellationToken);
         if (!result.Success)
         {

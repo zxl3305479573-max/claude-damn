@@ -28,7 +28,7 @@ internal static class HelperPipeClient
 {
     private const string PipeName = "ClaudeDesktopGuardian";
     private const int DefaultIoTimeoutMs = 12_000;
-    private const int ConnectTimeoutMs = 1_500;
+    private const int ConnectTimeoutMs = 3_000;
 
     public static async Task<HelperCallResult> SendAsync(
         string command,
@@ -94,7 +94,7 @@ internal static class HelperPipeClient
     public static async Task<(bool Ready, string Error)> EnsureStartedAsync(
         CancellationToken cancellationToken = default)
     {
-        var status = await SendAsync("status", null, timeoutMs: 4_000, cancellationToken: cancellationToken);
+        var status = await SendAsync("status", null, timeoutMs: 5_000, cancellationToken: cancellationToken);
         if (status.Success)
         {
             return (true, string.Empty);
@@ -124,7 +124,7 @@ internal static class HelperPipeClient
         for (var attempt = 0; attempt < 12; attempt++)
         {
             await Task.Delay(300, cancellationToken);
-            status = await SendAsync("status", null, timeoutMs: 4_000, cancellationToken: cancellationToken);
+            status = await SendAsync("status", null, timeoutMs: 5_000, cancellationToken: cancellationToken);
             if (status.Success)
             {
                 return (true, string.Empty);

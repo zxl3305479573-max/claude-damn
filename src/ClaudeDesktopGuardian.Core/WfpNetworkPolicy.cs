@@ -163,6 +163,27 @@ public static class ClaudeInstallDiscovery
         return null;
     }
 
+    public static IReadOnlyList<string> ResolveWfpTargetPaths(
+        IReadOnlyList<string> discoveredPaths,
+        IReadOnlyList<string>? extraPaths = null,
+        Func<string, bool>? isAllowedExtraPath = null)
+    {
+        var canonical = (discoveredPaths ?? Array.Empty<string>())
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        if (canonical.Length > 0)
+        {
+            return canonical;
+        }
+
+        var validator = isAllowedExtraPath ?? IsAllowedClaudeProgramPath;
+        return (extraPaths ?? Array.Empty<string>())
+            .Where(validator)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
     public static bool IsAllowedClaudeProgramPath(string path)
     {
         if (!Path.IsPathFullyQualified(path) ||
@@ -601,9 +622,8 @@ public sealed class WfpNetworkPolicy : IDisposable
         }
 
         var expectedPerIdentity = allowLoopback ? 6 : 4;
-        var expectedCount = (paths?.Count ?? 0) + (string.IsNullOrWhiteSpace(packageFamilyName) ? 0 : 1);
         if (paths is null || paths.Count == 0 || interfaceLuid == 0 ||
-            count != expectedCount || perIdentity != expectedPerIdentity)
+            perIdentity != expectedPerIdentity)
         {
             return "stale";
         }
@@ -611,6 +631,12 @@ public sealed class WfpNetworkPolicy : IDisposable
         var valid = true;
         WithIdentities(packageFamilyName, paths, identities =>
         {
+            if (count != identities.Length)
+            {
+                valid = false;
+                return;
+            }
+
             for (var index = 0; index < count * perIdentity && valid; index++)
             {
                 valid = CheckFilter(index, perIdentity, identities[index / perIdentity], interfaceLuid);
@@ -870,33 +896,42 @@ public sealed class WfpNetworkPolicy : IDisposable
         Action<FilterCondition[]> action)
     {
         var hasPackage = !string.IsNullOrWhiteSpace(packageFamilyName);
-        var identities = new FilterCondition[paths.Count + (hasPackage ? 1 : 0)];
-        if (identities.Length > 1024)
-        {
-            throw new ArgumentException("身份数量超出 WFP 保护上限");
-        }
-
         var sid = IntPtr.Zero;
-        var appIds = new IntPtr[paths.Count];
+        var appIds = new List<IntPtr>(paths.Count);
+        var identities = new List<FilterCondition>(paths.Count + (hasPackage ? 1 : 0));
+        var seenAppIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         try
         {
+            for (var index = 0; index < paths.Count; index++)
+            {
+                Check(FwpmGetAppIdFromFileName0(paths[index], out var appId), "FwpmGetAppIdFromFileName0");
+                var normalizedAppId = ReadBlobString(appId);
+                if (!string.IsNullOrEmpty(normalizedAppId) && !seenAppIds.Add(normalizedAppId))
+                {
+                    FwpmFreeMemory0(ref appId);
+                    continue;
+                }
+
+                appIds.Add(appId);
+                identities.Add(new FilterCondition(AppIdField, MatchEqual, new ConditionValue(TypeByteBlob, appId)));
+            }
+
             if (hasPackage)
             {
                 Marshal.ThrowExceptionForHR(DeriveAppContainerSidFromAppContainerName(packageFamilyName!, out sid));
-                identities[paths.Count] = new FilterCondition(PackageIdField, MatchEqual, new ConditionValue(TypeSid, sid));
+                identities.Add(new FilterCondition(PackageIdField, MatchEqual, new ConditionValue(TypeSid, sid)));
             }
 
-            for (var index = 0; index < paths.Count; index++)
+            if (identities.Count > 1024)
             {
-                Check(FwpmGetAppIdFromFileName0(paths[index], out appIds[index]), "FwpmGetAppIdFromFileName0");
-                identities[index] = new FilterCondition(AppIdField, MatchEqual, new ConditionValue(TypeByteBlob, appIds[index]));
+                throw new ArgumentException("身份数量超出 WFP 保护上限");
             }
 
-            action(identities);
+            action(identities.ToArray());
         }
         finally
         {
-            for (var i = 0; i < appIds.Length; i++)
+            for (var i = 0; i < appIds.Count; i++)
             {
                 var ptr = appIds[i];
                 if (ptr != IntPtr.Zero)

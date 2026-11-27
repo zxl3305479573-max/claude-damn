@@ -159,15 +159,18 @@ public partial class MainWindow
 
             var wfpNotice = string.Empty;
             if (_config.WfpStrictEnabled &&
-                (!previousWfpStrict || previousWfpLoopback != _config.WfpAllowLoopback) &&
-                !string.IsNullOrWhiteSpace(_lastReport?.Network.AdapterGuid))
+                (!previousWfpStrict || previousWfpLoopback != _config.WfpAllowLoopback))
             {
-                var wfpRes = await SendHelperAsync(
-                    "wfp-enable",
-                    _lastReport,
-                    adapterGuid: _lastReport!.Network.AdapterGuid,
-                    allowLoopback: _config.WfpAllowLoopback);
-                wfpNotice = wfpRes.Success ? "；WFP 出站锁已自动应用" : $"；WFP 应用失败（{wfpRes.Detail}）";
+                var currentReport = await RunCheckAsync(false) ?? _lastReport;
+                if (!string.IsNullOrWhiteSpace(currentReport?.Network.AdapterGuid))
+                {
+                    var wfpRes = await SendHelperAsync(
+                        "wfp-enable",
+                        currentReport,
+                        adapterGuid: currentReport!.Network.AdapterGuid,
+                        allowLoopback: _config.WfpAllowLoopback);
+                    wfpNotice = wfpRes.Success ? "；WFP 出站锁已自动应用" : $"；WFP 应用失败（{wfpRes.Detail}）";
+                }
             }
 
             SettingsStatusText.Text = $"✓ 设置已保存至 config.json{tcpOnlyNotice}{wfpNotice}，正在重新执行完整检查…";

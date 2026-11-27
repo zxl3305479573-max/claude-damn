@@ -56,12 +56,8 @@ public partial class MainWindow
 
         try
         {
-            if (_lastReport is null || string.IsNullOrWhiteSpace(_lastReport.Network.AdapterGuid))
-            {
-                await RunCheckAsync(true);
-            }
-
-            var adapterGuid = _lastReport?.Network.AdapterGuid ?? string.Empty;
+            var currentReport = await RunCheckAsync(false) ?? _lastReport;
+            var adapterGuid = currentReport?.Network.AdapterGuid ?? string.Empty;
             if (string.IsNullOrWhiteSpace(adapterGuid))
             {
                 AppendToolOutput("[失败] 当前未检测到在线 VPN/TUN 网卡，无法启用 WFP 出站锁。");
@@ -71,7 +67,7 @@ public partial class MainWindow
             var sw = Stopwatch.StartNew();
             var result = await SendHelperAsync(
                 "wfp-enable",
-                _lastReport,
+                currentReport,
                 adapterGuid: adapterGuid,
                 allowLoopback: _config.WfpAllowLoopback);
             sw.Stop();
