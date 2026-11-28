@@ -13,7 +13,7 @@ public sealed record GuardianUpdate(
 
 public sealed class GuardianUpdateService
 {
-    private const string Repository = "zxl3305479573-max/claude-damn";
+    private const string Repository = "snowpear-lab/claude-damn";
     private const long MaximumPackageBytes = 512L * 1024 * 1024;
     private static readonly HashSet<string> DownloadHosts = new(StringComparer.OrdinalIgnoreCase)
     {

@@ -20,17 +20,17 @@ var releaseMetadata = """
     "tag_name": "guardian-v1.3.0",
     "draft": false,
     "prerelease": false,
-    "html_url": "https://github.com/zxl3305479573-max/claude-damn/releases/tag/guardian-v1.3.0",
+    "html_url": "https://github.com/snowpear-lab/claude-damn/releases/tag/guardian-v1.3.0",
     "assets": [
-      { "name": "ClaudeDesktopGuardian-1.3.0-windows-x64.zip", "browser_download_url": "https://github.com/zxl3305479573-max/claude-damn/releases/download/guardian-v1.3.0/ClaudeDesktopGuardian-1.3.0-windows-x64.zip" },
-      { "name": "SHA256SUMS-release.txt", "browser_download_url": "https://github.com/zxl3305479573-max/claude-damn/releases/download/guardian-v1.3.0/SHA256SUMS-release.txt" }
+      { "name": "ClaudeDesktopGuardian-1.3.0-windows-x64.zip", "browser_download_url": "https://github.com/snowpear-lab/claude-damn/releases/download/guardian-v1.3.0/ClaudeDesktopGuardian-1.3.0-windows-x64.zip" },
+      { "name": "SHA256SUMS-release.txt", "browser_download_url": "https://github.com/snowpear-lab/claude-damn/releases/download/guardian-v1.3.0/SHA256SUMS-release.txt" }
     ]
   },
   {
     "tag_name": "guardian-v9.0.0-rc.1",
     "draft": false,
     "prerelease": true,
-    "html_url": "https://github.com/zxl3305479573-max/claude-damn/releases/tag/guardian-v9.0.0-rc.1",
+    "html_url": "https://github.com/snowpear-lab/claude-damn/releases/tag/guardian-v9.0.0-rc.1",
     "assets": []
   }
 ]
@@ -47,7 +47,7 @@ Assert(GuardianUpdateService.ParseChecksum(
 var releaseApiHandler = new MockHttpHandler(request =>
 {
     Assert(request.RequestUri?.AbsoluteUri ==
-           "https://api.github.com/repos/zxl3305479573-max/claude-damn/releases?per_page=100",
+           "https://api.github.com/repos/snowpear-lab/claude-damn/releases?per_page=100",
         "OTA 应从配置的 GitHub 仓库读取 Release", failures);
     return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(releaseMetadata) };
 });

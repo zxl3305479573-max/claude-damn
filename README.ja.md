@@ -11,12 +11,12 @@
 </p>
 
 <p>
-  <a href="https://github.com/zxl3305479573-max/claude-damn/releases"><img src="https://img.shields.io/github/v/release/zxl3305479573-max/claude-damn?style=flat-square&logo=github&color=D97706&label=Release" alt="Latest Release" /></a>
-  <a href="https://github.com/zxl3305479573-max/claude-damn/actions/workflows/guardian-ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/zxl3305479573-max/claude-damn/guardian-ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI Status" /></a>
+  <a href="https://github.com/snowpear-lab/claude-damn/releases"><img src="https://img.shields.io/github/v/release/snowpear-lab/claude-damn?style=flat-square&logo=github&color=D97706&label=Release" alt="Latest Release" /></a>
+  <a href="https://github.com/snowpear-lab/claude-damn/actions/workflows/guardian-ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/snowpear-lab/claude-damn/guardian-ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI" alt="CI Status" /></a>
   <img src="https://img.shields.io/badge/Platform-Windows%20x64-0078D4?style=flat-square&logo=windows&logoColor=white" alt="Platform Windows x64" />
   <img src="https://img.shields.io/badge/.NET-8.0%20WPF-512BD4?style=flat-square&logo=dotnet&logoColor=white" alt=".NET 8 WPF" />
-  <a href="https://github.com/zxl3305479573-max/claude-damn/stargazers"><img src="https://img.shields.io/github/stars/zxl3305479573-max/claude-damn?style=flat-square&logo=github&color=F59E0B" alt="GitHub Stars" /></a>
-  <a href="https://github.com/zxl3305479573-max/claude-damn/releases"><img src="https://img.shields.io/github/downloads/zxl3305479573-max/claude-damn/total?style=flat-square&color=10B981" alt="Downloads" /></a>
+  <a href="https://github.com/snowpear-lab/claude-damn/stargazers"><img src="https://img.shields.io/github/stars/snowpear-lab/claude-damn?style=flat-square&logo=github&color=F59E0B" alt="GitHub Stars" /></a>
+  <a href="https://github.com/snowpear-lab/claude-damn/releases"><img src="https://img.shields.io/github/downloads/snowpear-lab/claude-damn/total?style=flat-square&color=10B981" alt="Downloads" /></a>
 </p>
 
 <p>
@@ -187,7 +187,7 @@ flowchart TB
 
 ### 方法 1：ビルド済み Release を使用 *（推奨）*
 
-1. [GitHub Releases](https://github.com/zxl3305479573-max/claude-damn/releases) から `ClaudeDesktopGuardian-<version>-windows-x64.zip` と `SHA256SUMS-release.txt` を取得します。
+1. [GitHub Releases](https://github.com/snowpear-lab/claude-damn/releases) から `ClaudeDesktopGuardian-<version>-windows-x64.zip` と `SHA256SUMS-release.txt` を取得します。
 2. PowerShell で SHA-256 を検証します：
    ```powershell
    Get-FileHash .\ClaudeDesktopGuardian-*-windows-x64.zip -Algorithm SHA256
