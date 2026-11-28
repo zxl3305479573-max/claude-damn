@@ -315,6 +315,7 @@ claude-damn/
 
 ## ドキュメント・謝辞
 
+- **全機能一覧・クイックスタートガイド（中国語）**：[`docs/使用指南.md`](./docs/使用指南.md)
 - **技術評価ドキュメント（中国語）**：[`docs/评测文档.md`](./docs/评测文档.md)
 - **サードパーティ表記**：[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) — ブラウザ側 WebRTC 候補収集に [`@myipscan/leak-check`](https://github.com/MyIPScan/leak-check)（`1.0.4`, MIT）を利用しています。
 - **スナップショット互換**：`.csnap` (`CSNAP001`) 形式は [`claude-switcher`](https://github.com/YOURSJEYO/claude-switcher) と互換性があります。

@@ -317,6 +317,7 @@ claude-damn/
 
 ## Documentation & Acknowledgments
 
+- **Full Feature Inventory & Quick-Start Guide (Chinese)**: [`docs/使用指南.md`](./docs/使用指南.md)
 - **Evaluation & Architecture Specification**: [`docs/评测文档.md`](./docs/评测文档.md)
 - **Third-Party Notices**: [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) — Browser-side WebRTC candidate collection uses [`@myipscan/leak-check`](https://github.com/MyIPScan/leak-check) (`1.0.4`, MIT).
 - **Snapshot Format Compatibility**: `.csnap` (`CSNAP001`) encrypted archives maintain format compatibility with [`claude-switcher`](https://github.com/YOURSJEYO/claude-switcher).

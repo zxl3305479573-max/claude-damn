@@ -315,6 +315,7 @@ claude-damn/
 
 ## 文档与致谢
 
+- **全功能清单与快速上手指南**：[`docs/使用指南.md`](./docs/使用指南.md)
 - **详细评测与规格说明**：[`docs/评测文档.md`](./docs/评测文档.md)
 - **第三方组件声明**：[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) — 浏览器端 WebRTC 候选收集基于 [`@myipscan/leak-check`](https://github.com/MyIPScan/leak-check)（`1.0.4`，MIT）。
 - **加密快照格式兼容**：`.csnap`（`CSNAP001`）格式完整兼容 [`claude-switcher`](https://github.com/YOURSJEYO/claude-switcher)。
