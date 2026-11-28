@@ -7,7 +7,7 @@ namespace ClaudeDesktopGuardian.Core;
 public static class GuardianHelperClient
 {
     public static async Task<JsonElement> SendAsync(string command, CancellationToken cancellationToken,
-        string adapterGuid = "", bool allowLoopback = false)
+        string adapterGuid = "", bool allowLoopback = false, string? timezoneId = null)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(TimeSpan.FromSeconds(command == "status" ? 4 : 15));
@@ -17,7 +17,7 @@ public static class GuardianHelperClient
         await using var writer = new StreamWriter(pipe, new UTF8Encoding(false), 4096, true) { AutoFlush = true };
         await writer.WriteLineAsync(JsonSerializer.Serialize(new
         {
-            token = new PipeTokenStore().GetOrCreate(), command, adapterGuid, allowLoopback
+            token = new PipeTokenStore().GetOrCreate(), command, adapterGuid, allowLoopback, timezoneId
         }).AsMemory(), timeout.Token);
         var text = await reader.ReadLineAsync(timeout.Token);
         using var document = JsonDocument.Parse(text ?? throw new IOException("管理员助手没有返回结果"));

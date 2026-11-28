@@ -416,6 +416,164 @@ internal static class DetectionEvidenceTests
             staleWfpReport with { Network = staleWfpReport.Network with { HelperAlive = false } });
         Check(!recoveryOffline.RefreshWfp && !recoveryOffline.RefreshTcpOnly,
             "管理员助手离线时不得宣称可执行策略刷新");
+
+        // GUI SaveSettings TCP-only transition must confirm helper disable BEFORE persisting false
+        var guiCfgPath = Path.Combine(Path.GetTempPath(), "cdg-gui-tcponly-" + Guid.NewGuid().ToString("N") + ".json");
+        try
+        {
+            var guiStore = new GuardianConfigStore(guiCfgPath);
+            var enabledStart = guiStore.Save(new GuardianConfig(TcpOnlyEnabled: true));
+            var helperCalls = new List<string>();
+            var disableThrew = false;
+            try
+            {
+                await ClaudeDesktopGuardian.App.MainWindow.SaveConfigWithTcpOnlyTransitionAsync(
+                    enabledStart,
+                    enabledStart with { TcpOnlyEnabled = false },
+                    guiStore,
+                    cmd =>
+                    {
+                        helperCalls.Add(cmd);
+                        return Task.FromResult(new ClaudeDesktopGuardian.App.HelperCallResult(false, "助手离线", null));
+                    });
+            }
+            catch (InvalidOperationException)
+            {
+                disableThrew = true;
+            }
+            Check(disableThrew && guiStore.Load().TcpOnlyEnabled && helperCalls.SequenceEqual(new[] { "tcp-only-disable" }),
+                "GUI 关闭 TCP-only 清理失败时不得先将配置写成 false 掩盖残留规则");
+
+            var (disabledSaved, disabledNotice) = await ClaudeDesktopGuardian.App.MainWindow.SaveConfigWithTcpOnlyTransitionAsync(
+                enabledStart,
+                enabledStart with { TcpOnlyEnabled = false },
+                guiStore,
+                cmd =>
+                {
+                    helperCalls.Add(cmd);
+                    return Task.FromResult(new ClaudeDesktopGuardian.App.HelperCallResult(true, "已清理", null));
+                });
+            Check(!disabledSaved.TcpOnlyEnabled && !guiStore.Load().TcpOnlyEnabled && disabledNotice.Contains("已清理", StringComparison.Ordinal),
+                "GUI 关闭 TCP-only 确认清理后应落盘 false");
+
+            var (reEnabledSaved, reEnabledNotice) = await ClaudeDesktopGuardian.App.MainWindow.SaveConfigWithTcpOnlyTransitionAsync(
+                disabledSaved,
+                disabledSaved with { TcpOnlyEnabled = true },
+                guiStore,
+                cmd =>
+                {
+                    helperCalls.Add(cmd);
+                    return Task.FromResult(new ClaudeDesktopGuardian.App.HelperCallResult(false, "助手离线", null));
+                });
+            Check(reEnabledSaved.TcpOnlyEnabled && guiStore.Load().TcpOnlyEnabled && reEnabledNotice.Contains("未确认", StringComparison.Ordinal),
+                "GUI 启用 TCP-only 应保持 Fail-Closed 先落盘 true 并提示助手未确认");
+
+            var appVersion = typeof(ClaudeDesktopGuardian.App.MainWindow).Assembly.GetName().Version;
+            Check(appVersion is not null && appVersion >= new Version(1, 0, 5),
+                $"本地构建程序集版本不得回落为 1.0.0（实际 {appVersion}）");
+
+            // Helper reconnect timezone preservation & immediate re-sync regression (same network context)
+            var activeTzReport = new GuardianReport(
+                DateTimeOffset.UtcNow,
+                Array.Empty<CheckResult>(),
+                healthy with
+                {
+                    HelperAlive = true,
+                    ProxyPathSkipped = false,
+                    ExitTimezone = "America/Los_Angeles",
+                    ExitWindowsTimezone = "Pacific Standard Time",
+                    CurrentWindowsTimezone = "Pacific Standard Time"
+                },
+                Array.Empty<ProcessInfo>());
+            var alreadyRecoveredPlan = ProtectionPolicyEvaluator.PlanHelperReconnect(true, activeTzReport);
+            Check(!alreadyRecoveredPlan.RestoreStaleTimezone && !alreadyRecoveredPlan.RunFullCheck,
+                "已初始化会话重连助手时不得误调 RestoreStaleTimezone 还原当前会话出口时区");
+            var coldStartPlan = ProtectionPolicyEvaluator.PlanHelperReconnect(false, activeTzReport);
+            Check(coldStartPlan.RestoreStaleTimezone && coldStartPlan.RunFullCheck,
+                "冷启动时助手离线、首次重连时应先恢复上次残留时区并触发完整检查重新适配");
+            var missingTzPlan = ProtectionPolicyEvaluator.PlanHelperReconnect(
+                true,
+                activeTzReport with { Network = activeTzReport.Network with { ExitWindowsTimezone = "" } });
+            Check(!missingTzPlan.RestoreStaleTimezone && missingTzPlan.RunFullCheck,
+                "缺少出口时区缓存时重连助手应触发完整检查解析并对齐时区");
+            var driftedTzReport = activeTzReport with
+            {
+                Network = activeTzReport.Network with { CurrentWindowsTimezone = "China Standard Time" }
+            };
+            Check(ProtectionPolicyEvaluator.ShouldSyncTimezoneAfterReconnect(true, config, driftedTzReport) &&
+                  !ProtectionPolicyEvaluator.ShouldSyncTimezoneAfterReconnect(true, config, activeTzReport) &&
+                  !ProtectionPolicyEvaluator.ShouldSyncTimezoneAfterReconnect(
+                      true,
+                      config with { DisabledOptionalChecks = new[] { GuardianCheckIds.Timezone } },
+                      driftedTzReport),
+                "同网络上下文重连后若系统时区偏离出口时区，须立即重新同步（除非用户禁用了时区检查）");
+
+            // External config hot-reload & non-clobbering GUI save merge regression
+            var initialLoaded = guiStore.Load(out string? cfgFp);
+            Check(!guiStore.TryReloadIfChanged(ref cfgFp, out _),
+                "config.json 未发生变化时 TryReloadIfChanged 不应重复触发重载");
+            guiStore.Save(initialLoaded with
+            {
+                IpReputation = new IpReputationConfig("https://api.ipquery.io/{ip}", "SECRET-KEY", 25, 7),
+                BlockOnWarning = true
+            });
+            Check(guiStore.TryReloadIfChanged(ref cfgFp, out var externallyUpdated) &&
+                  externallyUpdated.IpReputation?.Url == "https://api.ipquery.io/{ip}" &&
+                  externallyUpdated.BlockOnWarning &&
+                  !guiStore.TryReloadIfChanged(ref cfgFp, out _),
+                "CLI/外部更新 config.json 后 TryReloadIfChanged 必须检测到变化并加载最新信誉源与策略");
+
+            var staleUiBaseline = new GuardianConfig(TcpOnlyEnabled: true, IpReputation: null);
+            var diskAfterCli = new GuardianConfig(
+                TcpOnlyEnabled: true,
+                BlockOnWarning: true,
+                IpReputation: new IpReputationConfig("https://api.ipquery.io/{ip}", "SECRET-KEY", 25, 7));
+            var uiToggledTcpOnly = staleUiBaseline with { TcpOnlyEnabled = false, IpReputation = null };
+            var mergedPreserve = ClaudeDesktopGuardian.App.MainWindow.MergeUiEditsOverLatestConfig(
+                staleUiBaseline,
+                diskAfterCli,
+                uiToggledTcpOnly);
+            Check(!mergedPreserve.TcpOnlyEnabled &&
+                  mergedPreserve.BlockOnWarning &&
+                  mergedPreserve.IpReputation?.Url == "https://api.ipquery.io/{ip}" &&
+                  mergedPreserve.IpReputation?.Key == "SECRET-KEY",
+                "GUI 在旧表单状态下仅修改 TCP-only 保存时，不得覆盖 CLI 刚写入的 IP 信誉源与非 UI 字段");
+
+            var uiExplicitClear = diskAfterCli with { IpReputation = null };
+            var mergedClear = ClaudeDesktopGuardian.App.MainWindow.MergeUiEditsOverLatestConfig(
+                diskAfterCli,
+                diskAfterCli,
+                uiExplicitClear);
+            Check(mergedClear.IpReputation is null,
+                "用户在 GUI 中显式清空已有信誉源 URL 时应正常保存为 null");
+
+            var uiUpdatedThreshold = diskAfterCli with
+            {
+                IpReputation = new IpReputationConfig("https://api.ipquery.io/{ip}", "", 40, 14)
+            };
+            var mergedThreshold = ClaudeDesktopGuardian.App.MainWindow.MergeUiEditsOverLatestConfig(
+                diskAfterCli,
+                diskAfterCli,
+                uiUpdatedThreshold);
+            Check(mergedThreshold.IpReputation?.Threshold == 40 && mergedThreshold.IpReputation?.CacheDays == 14,
+                "用户在 GUI 中修改信誉阈值/缓存天数时应覆盖磁盘旧值");
+
+            guiStore.Save(diskAfterCli with { IpReputation = null });
+            Check(guiStore.TryReloadIfChanged(ref cfgFp, out var explicitlyCleared) &&
+                  explicitlyCleared.IpReputation is null,
+                "显式清空并保存 IpReputation=null 后重新加载必须保持关闭，不得被默认源强行覆盖");
+
+            File.Delete(guiCfgPath);
+            Check(guiStore.TryReloadIfChanged(ref cfgFp, out var afterDelete) &&
+                  afterDelete.IpReputation?.Url == IpReputationConfig.DefaultFreeUrl &&
+                  afterDelete.IpReputation?.Threshold == 25 &&
+                  afterDelete.IpReputation?.CacheDays == 7,
+                "首次运行或外部删除 config.json 后应默认预填免注册免费信誉源 https://api.ipquery.io/{ip}");
+        }
+        finally
+        {
+            if (File.Exists(guiCfgPath)) File.Delete(guiCfgPath);
+        }
     }
 
     private sealed class SnapshotProbe(NetworkSnapshot snapshot) : IEnvironmentProbe, ISingleCheckProbe

@@ -55,14 +55,22 @@ jobs:
           exit $LASTEXITCODE
         shell: pwsh
 
-      - name: Validate OTA updater script
+      - name: Check WebRTC script syntax
+        run: node --check src/ClaudeDesktopGuardian.App/web/webrtc/leak-check.js
+
+      - name: Validate PowerShell scripts (UTF-8 BOM and AST)
         shell: pwsh
         run: |
-          $path = 'apply-update.ps1'
-          $bytes = [IO.File]::ReadAllBytes($path)
-          if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
-            throw 'OTA updater must be UTF-8 with BOM.'
+          foreach ($path in @('build.ps1', 'install.ps1', 'apply-update.ps1')) {
+            $bytes = [IO.File]::ReadAllBytes($path)
+            if ($bytes.Length -lt 3 -or $bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF) {
+              throw "$path must be UTF-8 with BOM."
+            }
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) { throw "$path syntax error: $($errors[0].Message)" }
           }
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors)
-          if ($errors.Count -gt 0) { throw $errors[0].Message }
+
+      - name: Verify shared-runtime publish bundle
+        shell: pwsh
+        run: ./build.ps1

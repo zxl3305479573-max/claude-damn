@@ -12,6 +12,7 @@ public sealed class GuardianCliContext
     public IEnvironmentProbe Probe { get; init; } = new WindowsEnvironmentProbe(helperStatusProvider: GuardianHelperClient.QueryStatusAsync);
     public Func<string, CancellationToken, Task<JsonElement>> SendHelper { get; init; } =
         (command, token) => GuardianHelperClient.SendAsync(command, token);
+    public Func<string, CancellationToken, Task<JsonElement>>? ApplyTimezone { get; init; }
     public IProcessInspector ProcessInspector { get; init; } = new WindowsProcessInspector();
     public ClashInspector ClashInspector { get; init; } = new();
     public TextWriter Out { get; init; } = Console.Out;
@@ -207,7 +208,12 @@ public static class GuardianCliRunner
                     ctx.ConfigStore.Save(
                         config with { ExpectedExitCountry = adapt.Country, ExpectedLocale = adapt.Locale },
                         preserveExistingApiKeyIfEmpty: true);
-                    ctx.Out.WriteLine($"OK:region={adapt.Country} tz={adapt.IanaTimezone} win_tz={adapt.WindowsTimezone} locale={adapt.Locale} source={adapt.Source}");
+                    var tzSync = await SyncRegionTimezoneAsync(
+                        adapt.WindowsTimezone,
+                        ctx.StateStore,
+                        ctx.ApplyTimezone ?? ((tzId, ct) => GuardianHelperClient.SendAsync("apply-timezone", ct, timezoneId: tzId)),
+                        cancellationToken);
+                    ctx.Out.WriteLine($"OK:region={adapt.Country} tz={adapt.IanaTimezone} win_tz={adapt.WindowsTimezone} locale={adapt.Locale} source={adapt.Source} tz_sync={tzSync}");
                     break;
                 }
                 case "rules-status":
@@ -315,6 +321,7 @@ public static class GuardianCliRunner
                         ["webrtcPolicy"] = WebRtcPolicies.Normalize(config.WebRtcPolicy),
                         ["disabled"] = config.DisabledOptionalChecks ?? Array.Empty<string>(),
                         ["allowOptionalFailures"] = config.AllowOptionalFailures,
+                        ["blockOnWarning"] = config.BlockOnWarning,
                         ["logging"] = config.LoggingEnabled,
                         ["wfpStrictEnabled"] = config.WfpStrictEnabled,
                         ["wfpAllowLoopback"] = config.WfpAllowLoopback,
@@ -469,6 +476,34 @@ public static class GuardianCliRunner
             updated = updated with { TcpOnlyEnabled = tcpOnly.GetBoolean() };
         }
 
+        if (root.TryGetProperty("proxyClientMode", out var clientModeProp))
+        {
+            if (clientModeProp.ValueKind != JsonValueKind.String)
+                throw new ArgumentException("proxyClientMode 必须为字符串");
+            updated = updated with { ProxyClientMode = clientModeProp.GetString() ?? ProxyClientModes.Auto };
+        }
+
+        if (root.TryGetProperty("wfpStrictEnabled", out var wfpStrictProp))
+        {
+            if (wfpStrictProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new ArgumentException("wfpStrictEnabled 必须为布尔值");
+            updated = updated with { WfpStrictEnabled = wfpStrictProp.GetBoolean() };
+        }
+
+        if (root.TryGetProperty("wfpAllowLoopback", out var wfpLoopbackProp))
+        {
+            if (wfpLoopbackProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new ArgumentException("wfpAllowLoopback 必须为布尔值");
+            updated = updated with { WfpAllowLoopback = wfpLoopbackProp.GetBoolean() };
+        }
+
+        if (root.TryGetProperty("blockOnWarning", out var blockWarnProp))
+        {
+            if (blockWarnProp.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+                throw new ArgumentException("blockOnWarning 必须为布尔值");
+            updated = updated with { BlockOnWarning = blockWarnProp.GetBoolean() };
+        }
+
         if (root.TryGetProperty("disabled", out var disabledProp) && disabledProp.ValueKind == JsonValueKind.Array)
         {
             var list = disabledProp.EnumerateArray()
@@ -520,6 +555,76 @@ public static class GuardianCliRunner
         }
 
         return updated;
+    }
+
+    internal static async Task<string> SyncRegionTimezoneAsync(
+        string targetWindowsTimezone,
+        GuardianStateStore stateStore,
+        Func<string, CancellationToken, Task<JsonElement>> applyTimezone,
+        CancellationToken cancellationToken,
+        string? currentTimezoneOverride = null)
+    {
+        if (string.IsNullOrWhiteSpace(targetWindowsTimezone) ||
+            !WindowsTimezoneMapper.IsKnownWindowsId(targetWindowsTimezone))
+        {
+            return "warn(未知Windows时区)";
+        }
+
+        string currentTz;
+        if (string.IsNullOrWhiteSpace(currentTimezoneOverride))
+        {
+            TimeZoneInfo.ClearCachedData();
+            currentTz = TimeZoneInfo.Local.Id;
+        }
+        else
+        {
+            currentTz = currentTimezoneOverride;
+        }
+
+        if (string.Equals(currentTz, targetWindowsTimezone, StringComparison.OrdinalIgnoreCase))
+        {
+            return "unchanged";
+        }
+
+        var state = stateStore.Load();
+        var originalTz = state.TimezoneOverrideActive && !string.IsNullOrWhiteSpace(state.OriginalWindowsTimezone)
+            ? state.OriginalWindowsTimezone
+            : currentTz;
+        stateStore.Save(state with
+        {
+            TimezoneOverrideActive = true,
+            OriginalWindowsTimezone = originalTz,
+            AppliedWindowsTimezone = targetWindowsTimezone,
+            TimezoneOverrideAt = DateTimeOffset.UtcNow
+        });
+
+        try
+        {
+            var response = await applyTimezone(targetWindowsTimezone, cancellationToken);
+            if (response.TryGetProperty("ok", out var okProp) && okProp.GetBoolean())
+            {
+                return "ok";
+            }
+
+            var err = response.TryGetProperty("error", out var errProp) && errProp.ValueKind == JsonValueKind.String
+                ? errProp.GetString() ?? "助手拒绝切换时区"
+                : "助手拒绝切换时区";
+            if (!state.TimezoneOverrideActive)
+            {
+                stateStore.Save(state);
+            }
+
+            return $"warn({err})";
+        }
+        catch (Exception ex)
+        {
+            if (!state.TimezoneOverrideActive)
+            {
+                stateStore.Save(state);
+            }
+
+            return $"warn({ex.Message})";
+        }
     }
 
     private static void WriteUsage(TextWriter writer)

@@ -1,3 +1,5 @@
+using System.Net;
+using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
@@ -6,6 +8,7 @@ namespace ClaudeDesktopGuardian.Core;
 public sealed class GuardianStateStore
 {
     private static readonly Regex IpPattern = new(@"\b(?:\d{1,3}\.){3}\d{1,3}\b", RegexOptions.Compiled);
+    private static readonly Regex Ipv6CandidatePattern = new(@"(?<![0-9a-fA-F:])(?:[0-9a-fA-F]{0,4}:){2,7}[0-9a-fA-F]{0,4}(?:\.\d{1,3}){0,3}(?![0-9a-fA-F:])", RegexOptions.Compiled);
     private readonly string _path;
 
     public GuardianStateStore(string? path = null)
@@ -56,6 +59,13 @@ public sealed class GuardianStateStore
         File.Move(temporary, _path, true);
     }
 
-    private static string Sanitize(string text) => IpPattern.Replace(text, "<IP>");
+    private static string Sanitize(string text)
+    {
+        var maskedV6 = Ipv6CandidatePattern.Replace(text, match =>
+            IPAddress.TryParse(match.Value, out var ip) && ip.AddressFamily == AddressFamily.InterNetworkV6
+                ? "<IP>"
+                : match.Value);
+        return IpPattern.Replace(maskedV6, "<IP>");
+    }
 }
 

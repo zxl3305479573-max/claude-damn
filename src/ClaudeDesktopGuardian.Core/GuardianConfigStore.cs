@@ -27,27 +27,77 @@ public sealed class GuardianConfigStore
 
     public string ConfigPath => _path;
 
-    public GuardianConfig Load()
+    public GuardianConfig Load() => Load(out _);
+
+    public GuardianConfig Load(out string fingerprint)
+    {
+        if (!TryReadRawContent(out var raw))
+        {
+            fingerprint = string.Empty;
+            return GuardianConfig.CreateDefault();
+        }
+
+        fingerprint = raw;
+        return ParseAndValidate(raw);
+    }
+
+    public string CaptureFingerprint() =>
+        TryReadRawContent(out var raw) ? raw : string.Empty;
+
+    public bool TryReloadIfChanged(ref string? lastFingerprint, out GuardianConfig config)
+    {
+        config = default!;
+        if (!TryReadRawContent(out var raw))
+        {
+            return false;
+        }
+
+        if (string.Equals(raw, lastFingerprint, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        lastFingerprint = raw;
+        config = ParseAndValidate(raw);
+        return true;
+    }
+
+    private bool TryReadRawContent(out string raw)
     {
         try
         {
             if (!File.Exists(_path))
             {
-                return new GuardianConfig();
+                raw = string.Empty;
+                return true;
             }
 
-            var raw = File.ReadAllText(_path, Encoding.UTF8);
-            if (raw.Length > 65536)
-            {
-                return new GuardianConfig();
-            }
-
-            var loaded = JsonSerializer.Deserialize<GuardianConfig>(raw, JsonOptions);
-            return loaded is null ? new GuardianConfig() : SanitizeAndValidate(loaded, throwOnError: false);
+            var content = File.ReadAllText(_path, Encoding.UTF8);
+            raw = content.Length > 65536 ? string.Empty : content;
+            return true;
         }
         catch
         {
-            return new GuardianConfig();
+            raw = string.Empty;
+            return false;
+        }
+    }
+
+    private static GuardianConfig ParseAndValidate(string raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+        {
+            return GuardianConfig.CreateDefault();
+        }
+
+        try
+        {
+            var loaded = JsonSerializer.Deserialize<GuardianConfig>(raw, JsonOptions);
+            return loaded is null ? GuardianConfig.CreateDefault() : SanitizeAndValidate(loaded, throwOnError: false);
+        }
+        catch
+        {
+            return GuardianConfig.CreateDefault();
         }
     }
 

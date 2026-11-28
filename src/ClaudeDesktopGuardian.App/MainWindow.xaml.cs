@@ -34,6 +34,9 @@ public partial class MainWindow : Window
     private CancellationTokenSource _checkCancellation = new();
 
     private GuardianConfig _config;
+    private GuardianConfig _uiBaselineConfig;
+    private string? _configFingerprint;
+    private bool _settingsResetPending;
     private GuardianReport? _lastReport;
     private MiniStatusWindow? _compactWindow;
     private bool _blocked;
@@ -57,7 +60,8 @@ public partial class MainWindow : Window
     {
         InitializeComponent();
 
-        _config = _configStore.Load();
+        _config = _configStore.Load(out _configFingerprint);
+        _uiBaselineConfig = _config;
         _browserProbe = new WebRtcBrowserProbe(WebRtcWebView);
         _environmentProbe = new WindowsEnvironmentProbe(helperStatusProvider: QueryHelperStatusAsync);
         _engine = new GuardianCheckEngine(
@@ -474,6 +478,7 @@ public partial class MainWindow : Window
         var sw = Stopwatch.StartNew();
         try
         {
+            SyncExternalConfigIfChanged();
             LastCheckText.Text = $"正在单项复检 {checkId}…";
             using var retestTimeout = CancellationTokenSource.CreateLinkedTokenSource(_checkCancellation.Token);
             retestTimeout.CancelAfter(TimeSpan.FromSeconds(25));
@@ -539,7 +544,11 @@ public partial class MainWindow : Window
 
             if (!report.Network.HelperAlive && await EnsureHelperAvailableAsync())
             {
-                _timezoneRecoveryReady = await RestoreStaleTimezoneAsync();
+                if (!_timezoneRecoveryReady)
+                {
+                    _timezoneRecoveryReady = await RestoreStaleTimezoneAsync();
+                }
+
                 report = await RunCheckAsync(true);
                 if (report is null)
                 {
@@ -663,6 +672,11 @@ public partial class MainWindow : Window
 
     private async Task<GuardianReport?> RunCheckCoreAsync(bool full)
     {
+        if (SyncExternalConfigIfChanged())
+        {
+            full = true;
+        }
+
         var sw = Stopwatch.StartNew();
         try
         {

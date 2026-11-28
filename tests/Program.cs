@@ -354,10 +354,16 @@ var statePath = Path.Combine(Path.GetTempPath(), "claude-desktop-guardian-state-
 try
 {
     var store = new GuardianStateStore(statePath);
-    store.Save(new GuardianState(true, "出口 IP 203.0.113.10 异常", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
+    store.Save(new GuardianState(true, "13:10:11 出口 IP 203.0.113.10 与 IPv6 2001:db8::10 / 2001:0db8:85a3:0000:0000:8a2e:0370:7334 / ::ffff:192.0.2.1 异常", DateTimeOffset.UtcNow, DateTimeOffset.UtcNow));
     var saved = store.Load();
     Assert(saved.Blocked, "阻断状态应持久化", failures);
-    Assert(saved.TripReason.Contains("<IP>", StringComparison.Ordinal), "状态文件应脱敏 IP", failures);
+    Assert(saved.TripReason.Contains("13:10:11", StringComparison.Ordinal) &&
+           saved.TripReason.Contains("<IP>", StringComparison.Ordinal) &&
+           !saved.TripReason.Contains("203.0.113.10", StringComparison.Ordinal) &&
+           !saved.TripReason.Contains("2001:db8::10", StringComparison.Ordinal) &&
+           !saved.TripReason.Contains("8a2e:0370:7334", StringComparison.Ordinal) &&
+           !saved.TripReason.Contains("192.0.2.1", StringComparison.Ordinal),
+        "状态文件应同时脱敏 IPv4 与 IPv6，且不误伤时间戳", failures);
 
     store.Save(saved with
     {
@@ -1568,6 +1574,65 @@ try
     Assert(await GuardianCliRunner.RunAsync(new[] { "set-check-config", """{"tcpOnlyEnabled":false}""" },
         MakeCliCtx(new StringWriter(), new StringWriter())) == 0 && cliHelperCommands.Last() == "tcp-only-disable",
         "CLI 关闭配置应清理专用托管策略", failures);
+
+    // 19b2. set-check-config supports proxyClientMode / wfpStrictEnabled / wfpAllowLoopback / blockOnWarning
+    Assert(await GuardianCliRunner.RunAsync(
+        new[] { "set-check-config", """{"proxyClientMode":"sing-box","wfpStrictEnabled":true,"wfpAllowLoopback":true,"blockOnWarning":true}""" },
+        MakeCliCtx(new StringWriter(), new StringWriter())) == 0,
+        "CLI set-check-config 应支持设置 proxyClientMode / wfpStrictEnabled / wfpAllowLoopback / blockOnWarning", failures);
+    var extendedCfgOut = new StringWriter();
+    _ = await GuardianCliRunner.RunAsync(new[] { "get-check-config" }, MakeCliCtx(extendedCfgOut, new StringWriter()));
+    var extendedCfgJson = extendedCfgOut.ToString();
+    Assert(extendedCfgJson.Contains("\"proxyClientMode\":\"sing-box\"", StringComparison.Ordinal) &&
+           extendedCfgJson.Contains("\"wfpStrictEnabled\":true", StringComparison.Ordinal) &&
+           extendedCfgJson.Contains("\"wfpAllowLoopback\":true", StringComparison.Ordinal) &&
+           extendedCfgJson.Contains("\"blockOnWarning\":true", StringComparison.Ordinal),
+        "CLI get-check-config 应回显新增可配置项", failures);
+    Assert(await GuardianCliRunner.RunAsync(
+        new[] { "set-check-config", """{"wfpStrictEnabled":"yes"}""" },
+        MakeCliCtx(new StringWriter(), new StringWriter())) == 1,
+        "CLI set-check-config 对非法布尔字段类型必须拒绝", failures);
+    Assert(await GuardianCliRunner.RunAsync(
+        new[] { "set-check-config", """{"proxyClientMode":"auto","wfpStrictEnabled":false,"wfpAllowLoopback":false,"blockOnWarning":false}""" },
+        MakeCliCtx(new StringWriter(), new StringWriter())) == 0,
+        "CLI set-check-config 应可恢复默认安全开关", failures);
+
+    // 19b3. CLI set-region timezone sync helper (unchanged, helper fail rollback, helper ok)
+    var regionStateStore = new GuardianStateStore(Path.Combine(cliRoot, "region-state.json"));
+    var tzUnchanged = await GuardianCliRunner.SyncRegionTimezoneAsync(
+        "Pacific Standard Time",
+        regionStateStore,
+        (_, _) => Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true })),
+        CancellationToken.None,
+        currentTimezoneOverride: "Pacific Standard Time");
+    Assert(tzUnchanged == "unchanged" && !regionStateStore.Load().TimezoneOverrideActive,
+        "CLI 地区同步时区已匹配时不应修改 state.json", failures);
+    var tzFailed = await GuardianCliRunner.SyncRegionTimezoneAsync(
+        "Tokyo Standard Time",
+        regionStateStore,
+        (_, _) => Task.FromResult(JsonSerializer.SerializeToElement(new { ok = false, error = "helper-offline" })),
+        CancellationToken.None,
+        currentTimezoneOverride: "China Standard Time");
+    Assert(tzFailed.StartsWith("warn(", StringComparison.Ordinal) && !regionStateStore.Load().TimezoneOverrideActive,
+        "CLI 地区同步时区失败时必须回滚 state.json 中的临时时区标记", failures);
+    string? appliedTzArg = null;
+    var tzOk = await GuardianCliRunner.SyncRegionTimezoneAsync(
+        "Tokyo Standard Time",
+        regionStateStore,
+        (tzId, _) =>
+        {
+            appliedTzArg = tzId;
+            return Task.FromResult(JsonSerializer.SerializeToElement(new { ok = true }));
+        },
+        CancellationToken.None,
+        currentTimezoneOverride: "China Standard Time");
+    var regionStateAfter = regionStateStore.Load();
+    Assert(tzOk == "ok" &&
+           appliedTzArg == "Tokyo Standard Time" &&
+           regionStateAfter.TimezoneOverrideActive &&
+           regionStateAfter.OriginalWindowsTimezone == "China Standard Time" &&
+           regionStateAfter.AppliedWindowsTimezone == "Tokyo Standard Time",
+        "CLI 地区同步时区成功时应调用助手并持久化原时区用于退出恢复", failures);
 
     // 19c. set-client / get-client / set-flclash-controller / checkdetail
     Assert(await GuardianCliRunner.RunAsync(new[] { "set-client", "flclash" }, MakeCliCtx(new StringWriter(), new StringWriter())) == 0,

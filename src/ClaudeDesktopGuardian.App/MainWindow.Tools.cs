@@ -22,11 +22,21 @@ public partial class MainWindow
             var ready = await EnsureHelperAvailableAsync();
             if (ready)
             {
-                _timezoneRecoveryReady = await RestoreStaleTimezoneAsync();
+                var (restoreStaleTimezone, runFullCheck) =
+                    ProtectionPolicyEvaluator.PlanHelperReconnect(_timezoneRecoveryReady, _lastReport);
+                if (restoreStaleTimezone)
+                {
+                    _timezoneRecoveryReady = await RestoreStaleTimezoneAsync();
+                }
+
                 await ApplySavedTcpOnlyAsync();
                 AppendToolOutput("[通过] 管理员助手受限命名管道已连接就绪。");
                 _logger.LogAction("reconnect-helper", "ok", 0, enabled: _config.LoggingEnabled);
-                await RunCheckAsync(false);
+                var report = await RunCheckAsync(runFullCheck);
+                if (ProtectionPolicyEvaluator.ShouldSyncTimezoneAfterReconnect(_timezoneRecoveryReady, _config, report))
+                {
+                    await EnsureExitTimezoneAsync(report!);
+                }
             }
             else
             {
@@ -127,6 +137,7 @@ public partial class MainWindow
         log.AppendLine($"# 重新适配出口地区 (set-region) {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         try
         {
+            SyncExternalConfigIfChanged();
             var probeRes = await _environmentProbe.ProbeRegionForAdaptAsync(_config, CancellationToken.None);
             if (!probeRes.Success)
             {
@@ -143,7 +154,8 @@ public partial class MainWindow
                     ExpectedLocale = probeRes.Locale
                 },
                 preserveExistingApiKeyIfEmpty: true);
-            LoadConfigToUi(_config);
+            _configFingerprint = _configStore.CaptureFingerprint();
+            LoadConfigToUi(_config, updateBaseline: true);
             log.AppendLine($"[通过] 已锁定出口目标：国家={probeRes.Country}，IANA 时区={probeRes.IanaTimezone}（Windows={probeRes.WindowsTimezone}），Locale={probeRes.Locale}（源={probeRes.Source}）");
 
             var state = _stateStore.Load();
@@ -220,6 +232,7 @@ public partial class MainWindow
         log.AppendLine($"# 一键修复执行 {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
         try
         {
+            SyncExternalConfigIfChanged();
             var report = _lastReport ?? await RunCheckAsync(true);
 
             var dnsRes = await SendHelperAsync("flush-dns", null);
@@ -315,6 +328,7 @@ public partial class MainWindow
 
         try
         {
+            SyncExternalConfigIfChanged();
             var target = !string.IsNullOrWhiteSpace(_config.ExpectedLocale)
                 ? _config.ExpectedLocale!
                 : !string.IsNullOrWhiteSpace(_lastReport?.Network.ExpectedLocale)
@@ -351,6 +365,7 @@ public partial class MainWindow
     {
         try
         {
+            SyncExternalConfigIfChanged();
             ToolOutputTextBox.Text = "正在查询 Clash / FlClash 运行模式与内核置顶规则…";
             var audit = await _clashInspector.InspectAsync(_config, CancellationToken.None);
             var sb = new StringBuilder();
@@ -391,6 +406,7 @@ public partial class MainWindow
 
         try
         {
+            SyncExternalConfigIfChanged();
             ToolOutputTextBox.Text = "正在识别 Clash 运行模式、清理旧 Merge.yaml 并验证内核 /rules…";
             var result = await _clashInspector.RepairClashVergeRulesAsync(_config, CancellationToken.None);
 
@@ -444,6 +460,7 @@ public partial class MainWindow
 
         try
         {
+            SyncExternalConfigIfChanged();
             DiagnosticsExporter.ExportZip(
                 dialog.FileName,
                 _config,
@@ -461,6 +478,7 @@ public partial class MainWindow
 
     private void OpenSafeBrowserButton_Click(object sender, RoutedEventArgs e)
     {
+        SyncExternalConfigIfChanged();
         var url = SafeBrowserUrlBox.Text?.Trim() ?? string.Empty;
         var result = SafeBrowserLauncher.Launch(url, _config, _lastReport?.Network);
         AppendToolOutput(result.Success ? $"[通过] {result.Message}" : $"[拦截] {result.Message}");
@@ -481,7 +499,7 @@ public partial class MainWindow
 
         try
         {
-            var report = _lastReport ?? await RunCheckAsync(true);
+            var report = await RunCheckAsync(_lastReport is null || _fullCheckPending);
             var gate = ProtectionPolicyEvaluator.EvaluateLaunchGate(report, _blocked, _ignoreWebRtc);
             if (!gate.Allowed)
             {

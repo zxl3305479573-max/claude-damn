@@ -106,6 +106,29 @@ public static class ProtectionPolicyEvaluator
         return (refreshWfp, refreshTcpOnly);
     }
 
+    public static (bool RestoreStaleTimezone, bool RunFullCheck) PlanHelperReconnect(
+        bool timezoneRecoveryReady,
+        GuardianReport? lastReport) =>
+        (!timezoneRecoveryReady,
+         !timezoneRecoveryReady ||
+         lastReport is null ||
+         string.IsNullOrWhiteSpace(lastReport.Network.ExitWindowsTimezone));
+
+    public static bool ShouldSyncTimezoneAfterReconnect(
+        bool timezoneRecoveryReady,
+        GuardianConfig config,
+        GuardianReport? report) =>
+        timezoneRecoveryReady &&
+        report is not null &&
+        !report.Network.ProxyPathSkipped &&
+        report.Network.HelperAlive &&
+        !config.IsCheckDisabled(GuardianCheckIds.Timezone) &&
+        !string.IsNullOrWhiteSpace(report.Network.ExitWindowsTimezone) &&
+        !string.Equals(
+            report.Network.CurrentWindowsTimezone,
+            report.Network.ExitWindowsTimezone,
+            StringComparison.OrdinalIgnoreCase);
+
     public static LaunchGateDecision EvaluateLaunchGate(
         GuardianReport? report,
         bool currentlyBlocked,

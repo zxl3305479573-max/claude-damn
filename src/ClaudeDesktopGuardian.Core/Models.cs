@@ -223,7 +223,13 @@ public sealed record IpReputationConfig(
     string Url = "",
     string Key = "",
     double Threshold = 25,
-    int CacheDays = 7);
+    int CacheDays = 7)
+{
+    public const string DefaultFreeUrl = "https://api.ipquery.io/{ip}";
+
+    public static IpReputationConfig CreateDefault() =>
+        new(DefaultFreeUrl, string.Empty, 25, 7);
+}
 
 public sealed record IpReputationRecord(
     DateTimeOffset CheckedAt,
@@ -435,6 +441,9 @@ public sealed record GuardianConfig(
         GuardianCheckIds.IsOptional(id) &&
         DisabledOptionalChecks is { Count: > 0 } &&
         DisabledOptionalChecks.Contains(id, StringComparer.OrdinalIgnoreCase);
+
+    public static GuardianConfig CreateDefault() =>
+        new(IpReputation: IpReputationConfig.CreateDefault());
 }
 
 public sealed record AccountSlotInfo(

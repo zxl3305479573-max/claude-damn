@@ -1,22 +1,51 @@
-﻿$ErrorActionPreference = 'Stop'
+﻿param(
+    [string]$Version = ''
+)
+
+$ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 
-dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.Core\ClaudeDesktopGuardian.Core.csproj') -c Release
+if ([string]::IsNullOrWhiteSpace($Version)) {
+    $gitTag = $null
+    if (Get-Command git -ErrorAction SilentlyContinue) {
+        try {
+            $gitTag = (& git -C $root describe --tags --match 'guardian-v*' --abbrev=0 2>$null)
+            if ($LASTEXITCODE -ne 0) {
+                $gitTag = $null
+            }
+        }
+        catch {
+            $gitTag = $null
+        }
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($gitTag) -and $gitTag.Trim() -match '^guardian-v(\d+\.\d+\.\d+)$') {
+        $Version = $Matches[1]
+    }
+    else {
+        $Version = '1.0.5'
+    }
+}
+if ($Version -notmatch '^\d+\.\d+\.\d+$') {
+    throw "版本号格式无效：$Version（预期 MAJOR.MINOR.PATCH）"
+}
+
+dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.Core\ClaudeDesktopGuardian.Core.csproj') -c Release "-p:Version=$Version"
 if ($LASTEXITCODE -ne 0) {
     throw "核心项目构建失败，退出码 $LASTEXITCODE"
 }
 
-dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.Helper\ClaudeDesktopGuardian.Helper.csproj') -c Release
+dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.Helper\ClaudeDesktopGuardian.Helper.csproj') -c Release "-p:Version=$Version"
 if ($LASTEXITCODE -ne 0) {
     throw "管理员助手构建失败，退出码 $LASTEXITCODE"
 }
 
-dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.App\ClaudeDesktopGuardian.App.csproj') -c Release
+dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.App\ClaudeDesktopGuardian.App.csproj') -c Release "-p:Version=$Version"
 if ($LASTEXITCODE -ne 0) {
     throw "界面项目构建失败，退出码 $LASTEXITCODE"
 }
 
-dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.Cli\ClaudeDesktopGuardian.Cli.csproj') -c Release
+dotnet build (Join-Path $root 'src\ClaudeDesktopGuardian.Cli\ClaudeDesktopGuardian.Cli.csproj') -c Release "-p:Version=$Version"
 if ($LASTEXITCODE -ne 0) {
     throw "命令行项目构建失败，退出码 $LASTEXITCODE"
 }
@@ -69,30 +98,32 @@ foreach ($dir in @($publish, (Join-Path $root 'publish\helper-win-x64'), (Join-P
 
 # Shared-runtime single-directory publish: Helper + Cli + App share one self-contained .NET 8 runtime
 dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.Helper\ClaudeDesktopGuardian.Helper.csproj') `
-    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $publish
+    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false "-p:Version=$Version" -o $publish
 if ($LASTEXITCODE -ne 0) {
     throw "管理员助手发布失败，退出码 $LASTEXITCODE"
 }
 
 dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.Cli\ClaudeDesktopGuardian.Cli.csproj') `
-    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $publish
+    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false "-p:Version=$Version" -o $publish
 if ($LASTEXITCODE -ne 0) {
     throw "命令行工具发布失败，退出码 $LASTEXITCODE"
 }
 
 dotnet publish (Join-Path $root 'src\ClaudeDesktopGuardian.App\ClaudeDesktopGuardian.App.csproj') `
-    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false -o $publish
+    -c Release -r win-x64 --self-contained true -p:PublishSingleFile=false "-p:Version=$Version" -o $publish
 if ($LASTEXITCODE -ne 0) {
     throw "界面发布失败，退出码 $LASTEXITCODE"
 }
 
 Copy-Item -LiteralPath (Join-Path $root 'apply-update.ps1') -Destination $publish
+Set-Content -LiteralPath (Join-Path $publish 'VERSION') -Value $Version -Encoding ascii
 
 foreach ($rel in @(
     'ClaudeDesktopGuardian.App.exe',
     'ClaudeDesktopGuardian.Helper.exe',
     'ClaudeDesktopGuardian.Cli.exe',
     'apply-update.ps1',
+    'VERSION',
     'Microsoft.Web.WebView2.Wpf.dll',
     'Microsoft.Web.WebView2.Core.dll',
     'WebView2Loader.dll',

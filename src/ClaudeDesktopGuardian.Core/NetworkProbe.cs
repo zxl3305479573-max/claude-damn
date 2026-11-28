@@ -423,10 +423,11 @@ public sealed partial class WindowsEnvironmentProbe : IEnvironmentProbe, ISingle
                 if (config.IpReputation is not null && !string.IsNullOrWhiteSpace(config.IpReputation.Url) && !string.IsNullOrWhiteSpace(exitIp))
                 {
                     (ipRepRec, ipRepErr) = await _ipReputationService.LookupAsync(exitIp, config.IpReputation, DateTimeOffset.UtcNow, cancellationToken);
-                    _lastIpReputation = ipRepRec;
-                    _lastIpReputationError = ipRepErr;
-                    snapshot = snapshot with { IpReputation = ipRepRec, IpReputationError = ipRepErr };
                 }
+
+                _lastIpReputation = ipRepRec;
+                _lastIpReputationError = ipRepErr;
+                snapshot = snapshot with { IpReputation = ipRepRec, IpReputationError = ipRepErr };
 
                 foreach (var repId in GuardianCheckIds.IpReputationIds)
                     _observations[repId] = new(ipRepRec is not null, ipRepRec?.CheckedAt ?? _clock.UtcNow,

@@ -114,6 +114,7 @@
         <!-- Compact Top TabControl -->
         <TabControl x:Name="MainTabControl"
                     Grid.Row="2"
+                    SelectionChanged="MainTabControl_SelectionChanged"
                     Style="{StaticResource GuardianTabControlStyle}">
             <!-- TAB 1: Environment Monitor -->
             <TabItem Header="环境监控" Style="{StaticResource GuardianTabItemStyle}">
@@ -562,7 +563,7 @@
                                             </Grid.RowDefinitions>
 
                                             <TextBlock Grid.Row="0" Grid.Column="0" Text="数据源 URL" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
-                                            <TextBox x:Name="IpRepUrlBox" Grid.Row="0" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="例如 https://api.ipapi.is/?q={ip}；留空表示关闭" Margin="0,0,0,8"/>
+                                            <TextBox x:Name="IpRepUrlBox" Grid.Row="0" Grid.Column="1" Style="{StaticResource GuardianTextBoxStyle}" ToolTip="默认 https://api.ipquery.io/{ip}（免注册免 Key）；可替换为自定义 HTTPS 信誉接口，留空即关闭" Margin="0,0,0,8"/>
 
                                             <TextBlock Grid.Row="1" Grid.Column="0" Text="API Key" VerticalAlignment="Center" Foreground="{StaticResource MutedBrush}" Margin="0,0,0,8"/>
                                             <StackPanel Grid.Row="1" Grid.Column="1" Margin="0,0,0,8">

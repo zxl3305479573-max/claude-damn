@@ -141,7 +141,7 @@ public static class CliInspector
         var sb = new StringBuilder();
         sb.AppendLine($"# Claude Code CLI 体检（只读） {DateTime.Now:yyyy-MM-dd HH:mm:ss}");
 
-        var cliPath = FindExecutableOnPath("claude", "claude.exe", "claude.cmd");
+        var cliPath = FindExecutableOnPath("claude.exe", "claude.cmd", "claude.bat", "claude");
         if (!string.IsNullOrEmpty(cliPath))
         {
             sb.AppendLine($"[通过] CLI 路径：{cliPath}");
@@ -152,6 +152,7 @@ public static class CliInspector
                 ? "native（官方安装脚本）"
                 : cliPath.Contains("node_modules", StringComparison.OrdinalIgnoreCase) ||
                   cliPath.Contains("\\.npm", StringComparison.OrdinalIgnoreCase) ||
+                  cliPath.Contains("\\npm\\", StringComparison.OrdinalIgnoreCase) ||
                   cliPath.Contains("\\.bun", StringComparison.OrdinalIgnoreCase)
                     ? "npm / bun"
                     : "未知（建议核对 PATH）";
