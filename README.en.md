@@ -48,7 +48,7 @@
 
 | Mechanism | Description |
 | :--- | :--- |
-| **WFP Kernel Outbound Lock + Firewall Kill-Switch** | Optionally enables native WFP (`fwpuclnt.dll`) `ALE_AUTH_CONNECT` TUN-only outbound whitelisting (with optional loopback passthrough for local MCP/proxies). Enabling terminates existing current-user Claude Desktop processes and verifies exit so stale sockets cannot bypass `ALE_AUTH_CONNECT`. Paired with idempotent `HNetCfg.FwPolicy2` firewall blocking and ownership-verified process-tree termination on trip. |
+| **WFP Kernel Outbound Lock + Firewall Kill-Switch** | Optionally enables native WFP (`fwpuclnt.dll`) `ALE_AUTH_CONNECT` TUN-only outbound whitelisting (with optional loopback passthrough for local MCP/proxies). Enabling terminates existing current-user Claude Desktop processes and verifies exit so stale sockets cannot bypass `ALE_AUTH_CONNECT`, **automatically rebinds WFP when the TUN adapter reconnects**, and avoids junction-duplicate `stale` false positives. Paired with idempotent `HNetCfg.FwPolicy2` firewall blocking, ownership-verified process-tree termination on trip, and concurrent Helper named-pipe status queries. |
 | **Claude TCP-Only Mode *(Off by Default)*** | Blocks all outbound UDP across all ports, interfaces, and profiles for identified Claude EXE/MSIX binaries under the dedicated `ClaudeDesktopGuardian.<SID>.TcpOnly` group without touching proxy cores. Activation, startup recovery, and explicit repair verify old-session exit and read back rules. Once enabled, missing/stale rules or insufficient evidence block launch and cannot be downgraded by optional settings. Clean exit and uninstall remove only managed rules while preserving the toggle for next launch. *(May impact voice, video, or real-time features.)* |
 | **Fail-Closed Lock & Safe Launch Gate** | Tripping a blocking fault enters a persistent locked state—neither Claude exiting nor 5-second light checks auto-unlock it, and any relaunched Claude process is forcibly terminated again. **Safe Launch Claude** (window & tray) launches EXE or MSIX only when unlocked and all hard checks pass. |
 | **Dual-Path Consistency & Strict Path Gate** | When a Windows HTTP system proxy is active, probes both the proxy path and a proxy-bypassing TUN path in parallel, keeping dual evidence and blocking on country or egress mismatch. Immediately skips all external probes whenever the proxy client or VPN/TUN adapter goes offline so the real IP is never exposed directly. |
@@ -58,7 +58,7 @@
 ### 2. 24-Point Inspection Matrix & Region Auto-Adaptation
 
 - **Hard Checks *(Never Skippable or Downgradable)***: Proxy client, VPN/TUN adapter, per-target Windows best route (`default-route`), egress IP, IPv6 active routing table (`::/0`, `2000::/3`, `64:ff9b::/96`) + forced IPv6 egress probe, elevated Helper service, firewall policy readiness, WFP strict mode, and TCP-only policy (when enabled).
-- **Route Verification & Evidence Freshness**: Resolves exact Windows best routes for specific probe targets and active Claude connections to catch split default routes and more-specific physical bypasses; direct TUN HTTP probes verify the egress interface prior to connecting. Network context changes trigger full re-checks; same-adapter egress baselines refresh at most every **60 s**. Every `Evidence` payload records `observed_at`, `cached`, `collection_state`, and `collection_error`—collection failures or empty readouts never fake green.
+- **Route Verification & Evidence Freshness**: Resolves exact Windows best routes for specific probe targets and active Claude connections to catch split default routes and more-specific physical bypasses (excluding loopback/private/link-local connections while enforcing `198.18.*` and public destinations, and avoiding false positives on ULA-only IPv6 TUNs); direct TUN HTTP probes verify the egress interface prior to connecting. Network context changes trigger full re-checks; same-adapter egress baselines refresh at most every **60 s**. Every `Evidence` payload records `observed_at`, `cached`, `collection_state`, and `collection_error`—collection failures or empty readouts never fake green.
 - **Policy & Optional Checks *(True Single-Item Recheck, Per-Item `Skip`, Optional `Warn` Downgrade)***:
   - Claude process tree & active dual-stack connections (allows TCP `443` and loopback; flags non-443 remote ports)
   - Egress IP stability & 48-hour drift history (`iphistory.log`)
@@ -315,9 +315,13 @@ claude-damn/
 
 ---
 
-## Documentation & Acknowledgments
+## Documentation, References & Acknowledgments
 
+### Project Documentation
 - **Full Feature Inventory & Quick-Start Guide (Chinese)**: [`docs/使用指南.md`](./docs/使用指南.md)
 - **Evaluation & Architecture Specification**: [`docs/评测文档.md`](./docs/评测文档.md)
-- **Third-Party Notices**: [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) — Browser-side WebRTC candidate collection uses [`@myipscan/leak-check`](https://github.com/MyIPScan/leak-check) (`1.0.4`, MIT).
-- **Snapshot Format Compatibility**: `.csnap` (`CSNAP001`) encrypted archives maintain format compatibility with [`claude-switcher`](https://github.com/YOURSJEYO/claude-switcher).
+- **Third-Party Notices**: [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md)
+
+### Reference Projects & Acknowledgments
+- [**YOURSJEYO/claude-switcher**](https://github.com/YOURSJEYO/claude-switcher) — Primary upstream reference and design inspiration for `claude-damn`'s Windows CLI command surface, `A–D` multi-account isolation slots, `keep-in-workspace.txt` shared-path whitelist, Clash pinned-rule conventions, and binary-compatible `.csnap` (`CSNAP001`) encrypted snapshots.
+- [**MyIPScan/leak-check**](https://github.com/MyIPScan/leak-check) (`@myipscan/leak-check` `1.0.4`, MIT) — Browser-side WebRTC ICE candidate collection logic adapted for the embedded WebView2 probe; see [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) for details.

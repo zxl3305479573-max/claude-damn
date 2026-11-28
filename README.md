@@ -48,7 +48,7 @@
 
 | 防护机制 | 核心说明 |
 | :--- | :--- |
-| **WFP 内核出站锁 + 防火墙急停双层协同** | 可选启用原生 WFP (`fwpuclnt.dll`) `ALE_AUTH_CONNECT` TUN-only 出站白名单（支持可选放行本机回环以兼容本地 MCP/代理；启用时会主动结束当前用户既有 Claude Desktop 进程并复核退出，避免旧连接绕过内核过滤），同时保留异常触发时的幂等 `HNetCfg.FwPolicy2` 防火墙阻断 + 归属校验进程树急停。 |
+| **WFP 内核出站锁 + 防火墙急停双层协同** | 可选启用原生 WFP (`fwpuclnt.dll`) `ALE_AUTH_CONNECT` TUN-only 出站白名单（支持可选放行本机回环以兼容本地 MCP/代理；启用时会主动结束当前用户既有 Claude Desktop 进程并复核退出，避免旧连接绕过内核过滤），支持 **TUN 网卡断开重连后自动重绑 WFP** 并修复 junction 路径重复导致的 `stale` 误报；同时保留异常触发时的幂等 `HNetCfg.FwPolicy2` 防火墙阻断 + 归属校验进程树急停，以及高并发 Helper 命名管道查询。 |
 | **Claude TCP-only *(独立设置，默认关闭)*** | 在专用规则组 `ClaudeDesktopGuardian.<SID>.TcpOnly` 下阻断已识别 Claude EXE/MSIX 的全部出站 UDP（所有端口、接口与配置），不包含代理内核。启用、启动恢复与显式修复均验证旧会话退出并读回规则；开启后规则缺失、过期或证据不足均阻止启动，不可被可选检查降级。正常退出与卸载仅清理本用户托管规则，保留开关以便下次启动重建。*（可能影响语音、视频或其他实时功能。）* |
 | **Fail-Closed 阻断锁定与安全启动门禁** | 异常触发阻断后持续锁定状态，Claude 退出或 5 秒轻量巡检不会自动解封；阻断期间若 Claude 重新启动会再次强制终止。提供「安全启动 Claude」按钮与托盘入口，仅在未阻断且硬性环境检查全部通过时放行启动（兼容 EXE 与 MSIX）。 |
 | **系统代理与 TUN 双路径一致性 & 严格路径门禁** | 检测到系统 HTTP 代理启用时并行探测代理路径与绕过代理的 TUN 路径，面板保留两类证据并在国家或出口分歧时阻断。代理客户端或 VPN/TUN 网卡离线时立即跳过所有外网探针，杜绝真实 IP 直连暴露。 |
@@ -58,7 +58,7 @@
 ### 2. 24 项环境体检矩阵与地区自适应
 
 - **核心硬检查 *(永不可跳过/降级)***：代理客户端、VPN/TUN 网卡、目标最佳路由（`default-route`）、出口 IP、IPv6 活动路由表（`::/0`、`2000::/3`、`64:ff9b::/96`）+ 强制 IPv6 出口探针、管理员助手、防火墙保护、WFP 严格模式策略，以及开启后的 TCP-only 策略。
-- **目标最佳路由与证据时效**：用具体探测目标及活动连接的 Windows 最佳路由识别拆分默认路由与更具体的物理旁路，HTTP 直连探针在建连前验证路径。网络上下文变化触发完整检查；相同网卡的出口基线最多 **60 秒** 刷新。每项 `Evidence` 标明实际观测时间 `observed_at`、缓存状态 `cached` 与采集错误 `collection_error`，采集失败或空表不再冒充通过。
+- **目标最佳路由与证据时效**：用具体探测目标及活动连接的 Windows 最佳路由识别拆分默认路由与更具体的物理旁路（自动排除回环/私网/链路本地连接并保留 `198.18.*` 与公网目标，TUN 仅配 ULA IPv6 时不误判阻断），HTTP 直连探针在建连前验证路径。网络上下文变化触发完整检查；相同网卡的出口基线最多 **60 秒** 刷新。每项 `Evidence` 标明实际观测时间 `observed_at`、缓存状态 `cached` 与采集错误 `collection_error`，采集失败或空表不再冒充通过。
 - **策略与可选检查 *(支持真单项复检、按项关闭为 `Skip`、可选失败降级为 `Warn`)***：
   - Claude 进程树与活动双栈连接端口策略（放行 TCP `443` 与本机回环，非 443 远端端口告警）
   - 出口 IP 稳定性与 48 小时漂移记录（`iphistory.log`）
@@ -313,9 +313,13 @@ claude-damn/
 
 ---
 
-## 文档与致谢
+## 文档、参考项目与致谢
 
+### 项目文档
 - **全功能清单与快速上手指南**：[`docs/使用指南.md`](./docs/使用指南.md)
 - **详细评测与规格说明**：[`docs/评测文档.md`](./docs/评测文档.md)
-- **第三方组件声明**：[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md) — 浏览器端 WebRTC 候选收集基于 [`@myipscan/leak-check`](https://github.com/MyIPScan/leak-check)（`1.0.4`，MIT）。
-- **加密快照格式兼容**：`.csnap`（`CSNAP001`）格式完整兼容 [`claude-switcher`](https://github.com/YOURSJEYO/claude-switcher)。
+- **第三方开源组件声明**：[`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md)
+
+### 参考项目与致谢
+- [**YOURSJEYO/claude-switcher**](https://github.com/YOURSJEYO/claude-switcher) — 本项目的上游灵感与核心设计参考来源，参考并兼容了其 Windows CLI 命令接口、`A–D` 多账号隔离槽位、`keep-in-workspace.txt` 共享白名单、Clash 置顶规则约定以及 `.csnap`（`CSNAP001`）加密快照二进制格式。
+- [**MyIPScan/leak-check**](https://github.com/MyIPScan/leak-check)（`@myipscan/leak-check` `1.0.4`，MIT）— 本项目内置 WebView2 浏览器端 WebRTC 候选地址收集逻辑基于该开源项目调整实现，详情见 [`THIRD_PARTY_NOTICES.md`](./THIRD_PARTY_NOTICES.md)。
